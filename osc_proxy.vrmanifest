@@ -1,0 +1,16 @@
+{
+  "source": "Custom",
+  "applications": [
+    {
+      "app_key": "custom.osc.eyeproxy",
+      "launch_type": "binary",
+      "binary_path_windows": "osc_proxy.exe",
+      "is_dashboard_overlay": true,
+      "strings": {
+        "en_us": {
+          "name": "OSC Eye Proxy"
+        }
+      }
+    }
+  ]
+}
