@@ -21,13 +21,15 @@ client = udp_client.SimpleUDPClient(IP_ADDRESS, SEND_PORT)
 # 状態管理変数
 state_lock = threading.Lock()
 last_eye_value = None
+last_gaze_x = None
+last_gaze_y = None
 last_change_time = time.time()
 is_sleeping = False
 msg_sent_count = 0
 event_logs = []
 
 def default_handler(address, *args):
-    global last_eye_value, last_change_time, is_sleeping, msg_sent_count
+    global last_eye_value, last_gaze_x, last_gaze_y, last_change_time, is_sleeping, msg_sent_count
 
     if "RightEyeLid" in address:
         current_time = time.time()
@@ -75,6 +77,30 @@ def default_handler(address, *args):
         # 左目のデータは右目のデータで上書きするため無視
         pass
 
+    elif any(k in address for k in ["RightEyeX", "EyeRightX"]):
+        left_address = address.replace("RightEyeX", "LeftEyeX") if "RightEyeX" in address else address.replace("EyeRightX", "EyeLeftX")
+        incoming_value = args[0] if len(args) > 0 else 0.0
+        with state_lock:
+            last_gaze_x = incoming_value
+        client.send_message(left_address, args)
+        client.send_message(address, args)
+        with state_lock:
+            msg_sent_count += 2
+
+    elif any(k in address for k in ["RightEyeY", "EyeRightY"]):
+        left_address = address.replace("RightEyeY", "LeftEyeY") if "RightEyeY" in address else address.replace("EyeRightY", "EyeLeftY")
+        incoming_value = args[0] if len(args) > 0 else 0.0
+        with state_lock:
+            last_gaze_y = incoming_value
+        client.send_message(left_address, args)
+        client.send_message(address, args)
+        with state_lock:
+            msg_sent_count += 2
+
+    elif any(k in address for k in ["LeftEyeX", "LeftEyeY", "EyeLeftX", "EyeLeftY"]):
+        # 左目の視線データは右目のデータで上書きするため無視
+        pass
+
     else:
         client.send_message(address, args)
         with state_lock:
@@ -92,6 +118,8 @@ def ui_loop():
             msg_sent_count = 0
             current_sleep = is_sleeping
             current_eye = last_eye_value
+            current_gaze_x = last_gaze_x
+            current_gaze_y = last_gaze_y
             last_change = last_change_time
             logs = list(event_logs)
             
@@ -111,6 +139,13 @@ def ui_loop():
             ui_text += f"Current Eye:    In={current_eye:.3f} | Out={output_val:.3f}\n"
         else:
             ui_text += f"Current Eye:    Waiting for data...\n"
+            
+        if current_gaze_x is not None or current_gaze_y is not None:
+            gx = current_gaze_x if current_gaze_x is not None else 0.0
+            gy = current_gaze_y if current_gaze_y is not None else 0.0
+            ui_text += f"Current Gaze:   X={gx:+.3f} | Y={gy:+.3f}\n"
+        else:
+            ui_text += f"Current Gaze:   Waiting for data...\n"
             
         ui_text += "---------------------------\n"
         ui_text += "Recent Events:\n"
