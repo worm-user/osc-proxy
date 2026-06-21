@@ -4,6 +4,7 @@ import psutil
 import os
 import sys
 import json
+import customtkinter as ctk
 from pythonosc import dispatcher, osc_server, udp_client
 
 # 受信ポート（Baballoniaからの送信先ポートに合わせる）
@@ -20,9 +21,19 @@ DEFAULT_CONFIG = {
         "change_threshold": 0.20,
         "closed_value": 0.0
     },
-    "sync": {
-        "eyelid_enabled": True,
-        "gaze_enabled": True
+    "mix": {
+        "eyelid": {
+            "right_out": { "right_in": 1.0, "left_in": 0.0 },
+            "left_out":  { "right_in": 1.0, "left_in": 0.0 }
+        },
+        "gaze_x": {
+            "right_out": { "right_in": 1.0, "left_in": 0.0 },
+            "left_out":  { "right_in": 1.0, "left_in": 0.0 }
+        },
+        "gaze_y": {
+            "right_out": { "right_in": 1.0, "left_in": 0.0 },
+            "left_out":  { "right_in": 1.0, "left_in": 0.0 }
+        }
     }
 }
 
@@ -42,8 +53,8 @@ def load_config():
         config = DEFAULT_CONFIG.copy()
         if "sleep_mode" in user_config:
             config["sleep_mode"].update(user_config["sleep_mode"])
-        if "sync" in user_config:
-            config["sync"].update(user_config["sync"])
+        if "mix" in user_config:
+            config["mix"].update(user_config["mix"])
         return config
     except Exception as e:
         print(f"Error reading config.json: {e}. Using default settings.")
@@ -56,192 +67,266 @@ client = udp_client.SimpleUDPClient(IP_ADDRESS, SEND_PORT)
 # 状態管理変数
 state_lock = threading.Lock()
 last_eye_value = None
-last_gaze_x = None
-last_gaze_y = None
 last_change_time = time.time()
 is_sleeping = False
 msg_sent_count = 0
-event_logs = []
+
+in_right_lid = 0.0
+in_left_lid = 0.0
+in_right_gaze_x = 0.0
+in_left_gaze_x = 0.0
+in_right_gaze_y = 0.0
+in_left_gaze_y = 0.0
 
 def default_handler(address, *args):
-    global last_eye_value, last_gaze_x, last_gaze_y, last_change_time, is_sleeping, msg_sent_count
+    global last_eye_value, last_change_time, is_sleeping, msg_sent_count
+    global in_right_lid, in_left_lid, in_right_gaze_x, in_left_gaze_x, in_right_gaze_y, in_left_gaze_y
 
-    if "RightEyeLid" in address:
-        current_time = time.time()
-        
-        # 受信した目のパラメータ値を取得 (通常はfloat)
-        incoming_value = args[0] if len(args) > 0 else 0.0
+    incoming_value = args[0] if len(args) > 0 else 0.0
+    current_time = time.time()
 
+    if "RightEyeLid" in address or "LeftEyeLid" in address:
         with state_lock:
-            if config["sleep_mode"]["enabled"]:
-                # 初回データまたは一定以上の変化があった場合
-                if last_eye_value is None or abs(incoming_value - last_eye_value) >= config["sleep_mode"]["change_threshold"]:
-                    last_eye_value = incoming_value
-                    last_change_time = current_time
-                    if is_sleeping:
-                        event_logs.append(f"[{time.strftime('%H:%M:%S')}] Eye movement detected. Exiting sleep mode.")
-                        if len(event_logs) > 5: event_logs.pop(0)
-                    is_sleeping = False
+            if "RightEyeLid" in address:
+                in_right_lid = incoming_value
+                if config["sleep_mode"]["enabled"]:
+                    if last_eye_value is None or abs(incoming_value - last_eye_value) >= config["sleep_mode"]["change_threshold"]:
+                        last_eye_value = incoming_value
+                        last_change_time = current_time
+                        is_sleeping = False
+                    else:
+                        if current_time - last_change_time >= config["sleep_mode"]["timeout_seconds"]:
+                            is_sleeping = True
                 else:
-                    # 一定時間変化がないかチェック
-                    if current_time - last_change_time >= config["sleep_mode"]["timeout_seconds"]:
-                        if not is_sleeping:
-                            event_logs.append(f"[{time.strftime('%H:%M:%S')}] No eye movement for {config['sleep_mode']['timeout_seconds']}s. Entering sleep mode.")
-                            if len(event_logs) > 5: event_logs.pop(0)
-                        is_sleeping = True
+                    last_eye_value = incoming_value
+                    is_sleeping = False
+            else:
+                in_left_lid = incoming_value
+            
+            mix_cfg = config["mix"]["eyelid"]
+            out_right = in_right_lid * mix_cfg["right_out"]["right_in"] + in_left_lid * mix_cfg["right_out"]["left_in"]
+            out_left  = in_right_lid * mix_cfg["left_out"]["right_in"]  + in_left_lid * mix_cfg["left_out"]["left_in"]
+            
+            if config["sleep_mode"]["enabled"] and is_sleeping:
+                out_right = config["sleep_mode"]["closed_value"]
+                out_left = config["sleep_mode"]["closed_value"]
+
+        if "RightEyeLid" in address:
+            r_addr = address
+            l_addr = address.replace("RightEyeLid", "LeftEyeLid")
+        else:
+            l_addr = address
+            r_addr = address.replace("LeftEyeLid", "RightEyeLid")
+
+        out_r = list(args)
+        if len(out_r) > 0: out_r[0] = out_right
+        else: out_r = [out_right]
+        
+        out_l = list(args)
+        if len(out_l) > 0: out_l[0] = out_left
+        else: out_l = [out_left]
+        
+        client.send_message(r_addr, out_r)
+        client.send_message(l_addr, out_l)
+        with state_lock:
+            msg_sent_count += 2
+
+    elif any(k in address for k in ["RightEyeX", "EyeRightX", "LeftEyeX", "EyeLeftX"]):
+        is_right = "RightEyeX" in address or "EyeRightX" in address
+        with state_lock:
+            if is_right:
+                in_right_gaze_x = incoming_value
+            else:
+                in_left_gaze_x = incoming_value
                 
-                # スリープ中なら目を閉じた値に固定、そうでなければ受信した値をそのまま使用
-                output_value = config["sleep_mode"]["closed_value"] if is_sleeping else incoming_value
-            else:
-                last_eye_value = incoming_value
-                is_sleeping = False
-                output_value = incoming_value
+            mix_cfg = config["mix"]["gaze_x"]
+            out_right = in_right_gaze_x * mix_cfg["right_out"]["right_in"] + in_left_gaze_x * mix_cfg["right_out"]["left_in"]
+            out_left  = in_right_gaze_x * mix_cfg["left_out"]["right_in"]  + in_left_gaze_x * mix_cfg["left_out"]["left_in"]
 
-        # 元の引数リストをコピーして、最初の値をoutput_valueに置き換える
-        output_args = list(args)
-        if len(output_args) > 0:
-            output_args[0] = output_value
+        if is_right:
+            r_addr = address
+            l_addr = address.replace("RightEyeX", "LeftEyeX") if "RightEyeX" in address else address.replace("EyeRightX", "EyeLeftX")
         else:
-            output_args = [output_value]
-            
-        if config["sync"]["eyelid_enabled"]:
-            left_address = address.replace("RightEyeLid", "LeftEyeLid")
-            client.send_message(left_address, output_args)
-            client.send_message(address, output_args)
-            with state_lock:
-                msg_sent_count += 2
-        else:
-            client.send_message(address, output_args)
-            with state_lock:
-                msg_sent_count += 1
+            l_addr = address
+            r_addr = address.replace("LeftEyeX", "RightEyeX") if "LeftEyeX" in address else address.replace("EyeLeftX", "EyeRightX")
 
-    elif "LeftEyeLid" in address:
-        if config["sync"]["eyelid_enabled"]:
-            # 左目のデータは右目のデータで上書きするため無視
-            pass
-        else:
-            incoming_value = args[0] if len(args) > 0 else 0.0
-            with state_lock:
-                output_value = config["sleep_mode"]["closed_value"] if is_sleeping and config["sleep_mode"]["enabled"] else incoming_value
-            output_args = list(args)
-            if len(output_args) > 0:
-                output_args[0] = output_value
-            else:
-                output_args = [output_value]
-            client.send_message(address, output_args)
-            with state_lock:
-                msg_sent_count += 1
+        out_r = list(args)
+        if len(out_r) > 0: out_r[0] = out_right
+        else: out_r = [out_right]
+        
+        out_l = list(args)
+        if len(out_l) > 0: out_l[0] = out_left
+        else: out_l = [out_left]
 
-    elif any(k in address for k in ["RightEyeX", "EyeRightX"]):
-        incoming_value = args[0] if len(args) > 0 else 0.0
+        client.send_message(r_addr, out_r)
+        client.send_message(l_addr, out_l)
         with state_lock:
-            last_gaze_x = incoming_value
-            
-        if config["sync"]["gaze_enabled"]:
-            left_address = address.replace("RightEyeX", "LeftEyeX") if "RightEyeX" in address else address.replace("EyeRightX", "EyeLeftX")
-            client.send_message(left_address, args)
-            client.send_message(address, args)
-            with state_lock:
-                msg_sent_count += 2
-        else:
-            client.send_message(address, args)
-            with state_lock:
-                msg_sent_count += 1
+            msg_sent_count += 2
 
-    elif any(k in address for k in ["RightEyeY", "EyeRightY"]):
-        incoming_value = args[0] if len(args) > 0 else 0.0
+    elif any(k in address for k in ["RightEyeY", "EyeRightY", "LeftEyeY", "EyeLeftY"]):
+        is_right = "RightEyeY" in address or "EyeRightY" in address
         with state_lock:
-            last_gaze_y = incoming_value
-            
-        if config["sync"]["gaze_enabled"]:
-            left_address = address.replace("RightEyeY", "LeftEyeY") if "RightEyeY" in address else address.replace("EyeRightY", "EyeLeftY")
-            client.send_message(left_address, args)
-            client.send_message(address, args)
-            with state_lock:
-                msg_sent_count += 2
-        else:
-            client.send_message(address, args)
-            with state_lock:
-                msg_sent_count += 1
+            if is_right:
+                in_right_gaze_y = incoming_value
+            else:
+                in_left_gaze_y = incoming_value
+                
+            mix_cfg = config["mix"]["gaze_y"]
+            out_right = in_right_gaze_y * mix_cfg["right_out"]["right_in"] + in_left_gaze_y * mix_cfg["right_out"]["left_in"]
+            out_left  = in_right_gaze_y * mix_cfg["left_out"]["right_in"]  + in_left_gaze_y * mix_cfg["left_out"]["left_in"]
 
-    elif any(k in address for k in ["LeftEyeX", "LeftEyeY", "EyeLeftX", "EyeLeftY"]):
-        if config["sync"]["gaze_enabled"]:
-            # 左目の視線データは右目のデータで上書きするため無視
-            pass
+        if is_right:
+            r_addr = address
+            l_addr = address.replace("RightEyeY", "LeftEyeY") if "RightEyeY" in address else address.replace("EyeRightY", "EyeLeftY")
         else:
-            client.send_message(address, args)
-            with state_lock:
-                msg_sent_count += 1
+            l_addr = address
+            r_addr = address.replace("LeftEyeY", "RightEyeY") if "LeftEyeY" in address else address.replace("EyeLeftY", "EyeRightY")
+
+        out_r = list(args)
+        if len(out_r) > 0: out_r[0] = out_right
+        else: out_r = [out_right]
+        
+        out_l = list(args)
+        if len(out_l) > 0: out_l[0] = out_left
+        else: out_l = [out_left]
+
+        client.send_message(r_addr, out_r)
+        client.send_message(l_addr, out_l)
+        with state_lock:
+            msg_sent_count += 2
 
     else:
         client.send_message(address, args)
         with state_lock:
             msg_sent_count += 1
 
-def ui_loop():
-    global msg_sent_count
-    os.system("") # WindowsコマンドプロンプトでANSIエスケープシーケンスを有効化
-    last_lines_count = 0
-    
-    while True:
-        time.sleep(1.0)
+class OSCProxyGUI(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("OSC Proxy Configuration")
+        self.geometry("600x650")
+        
+        self.tabview = ctk.CTkTabview(self)
+        self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
+        
+        self.tabview.add("Eyelid")
+        self.tabview.add("Gaze X")
+        self.tabview.add("Gaze Y")
+        self.tabview.add("Sleep Mode")
+        
+        self.sliders = {}
+        
+        self.create_mix_tab("Eyelid", "eyelid")
+        self.create_mix_tab("Gaze X", "gaze_x")
+        self.create_mix_tab("Gaze Y", "gaze_y")
+        self.create_sleep_tab()
+        
+        save_btn = ctk.CTkButton(self, text="Save Config", command=self.save_config)
+        save_btn.pack(pady=10)
+        
+        self.status_label = ctk.CTkLabel(self, text="Messages / sec: 0 | Sleep: OFF", font=("Arial", 12))
+        self.status_label.pack(pady=5)
+        self.update_status()
+
+    def create_mix_tab(self, tab_name, config_key):
+        tab = self.tabview.tab(tab_name)
+        
+        for side_out in ["right_out", "left_out"]:
+            frame = ctk.CTkFrame(tab)
+            frame.pack(fill="x", padx=10, pady=10)
+            
+            label = ctk.CTkLabel(frame, text=f"Output: {side_out.replace('_', ' ').title()}", font=("Arial", 14, "bold"))
+            label.pack(anchor="w", padx=10, pady=5)
+            
+            for side_in in ["right_in", "left_in"]:
+                row = ctk.CTkFrame(frame, fg_color="transparent")
+                row.pack(fill="x", padx=10, pady=2)
+                
+                lbl = ctk.CTkLabel(row, text=f"From {side_in.replace('_', ' ').title()}:", width=120, anchor="e")
+                lbl.pack(side="left", padx=5)
+                
+                slider = ctk.CTkSlider(row, from_=-1.0, to=1.0, command=lambda v, k=config_key, o=side_out, i=side_in: self.on_mix_change(v, k, o, i))
+                slider.set(config["mix"][config_key][side_out][side_in])
+                slider.pack(side="left", fill="x", expand=True, padx=5)
+                
+                val_lbl = ctk.CTkLabel(row, text=f"{slider.get():.2f}", width=40)
+                val_lbl.pack(side="left")
+                
+                self.sliders[f"{config_key}_{side_out}_{side_in}"] = (slider, val_lbl)
+
+    def on_mix_change(self, value, config_key, side_out, side_in):
+        val = float(value)
+        with state_lock:
+            config["mix"][config_key][side_out][side_in] = val
+        slider, val_lbl = self.sliders[f"{config_key}_{side_out}_{side_in}"]
+        val_lbl.configure(text=f"{val:.2f}")
+
+    def create_sleep_tab(self):
+        tab = self.tabview.tab("Sleep Mode")
+        
+        self.sleep_enabled = ctk.BooleanVar(value=config["sleep_mode"]["enabled"])
+        cb = ctk.CTkCheckBox(tab, text="Enable Sleep Mode", variable=self.sleep_enabled, command=self.on_sleep_change)
+        cb.pack(anchor="w", padx=20, pady=10)
+        
+        # Timeout
+        row1 = ctk.CTkFrame(tab, fg_color="transparent")
+        row1.pack(fill="x", padx=20, pady=5)
+        ctk.CTkLabel(row1, text="Timeout (sec):", width=120, anchor="e").pack(side="left", padx=5)
+        self.timeout_entry = ctk.CTkEntry(row1)
+        self.timeout_entry.insert(0, str(config["sleep_mode"]["timeout_seconds"]))
+        self.timeout_entry.pack(side="left", fill="x", expand=True)
+        self.timeout_entry.bind("<KeyRelease>", self.on_sleep_change)
+        
+        # Threshold
+        row2 = ctk.CTkFrame(tab, fg_color="transparent")
+        row2.pack(fill="x", padx=20, pady=5)
+        ctk.CTkLabel(row2, text="Change Threshold:", width=120, anchor="e").pack(side="left", padx=5)
+        self.threshold_entry = ctk.CTkEntry(row2)
+        self.threshold_entry.insert(0, str(config["sleep_mode"]["change_threshold"]))
+        self.threshold_entry.pack(side="left", fill="x", expand=True)
+        self.threshold_entry.bind("<KeyRelease>", self.on_sleep_change)
+
+        # Closed value
+        row3 = ctk.CTkFrame(tab, fg_color="transparent")
+        row3.pack(fill="x", padx=20, pady=5)
+        ctk.CTkLabel(row3, text="Closed Value:", width=120, anchor="e").pack(side="left", padx=5)
+        self.closed_val_entry = ctk.CTkEntry(row3)
+        self.closed_val_entry.insert(0, str(config["sleep_mode"]["closed_value"]))
+        self.closed_val_entry.pack(side="left", fill="x", expand=True)
+        self.closed_val_entry.bind("<KeyRelease>", self.on_sleep_change)
+
+    def on_sleep_change(self, event=None):
+        with state_lock:
+            config["sleep_mode"]["enabled"] = self.sleep_enabled.get()
+            try: config["sleep_mode"]["timeout_seconds"] = float(self.timeout_entry.get())
+            except: pass
+            try: config["sleep_mode"]["change_threshold"] = float(self.threshold_entry.get())
+            except: pass
+            try: config["sleep_mode"]["closed_value"] = float(self.closed_val_entry.get())
+            except: pass
+
+    def save_config(self):
+        with state_lock:
+            try:
+                with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=4)
+                print("Config saved successfully.")
+            except Exception as e:
+                print(f"Error saving config: {e}")
+
+    def update_status(self):
+        global msg_sent_count
         with state_lock:
             mps = msg_sent_count
             msg_sent_count = 0
-            current_sleep = is_sleeping
-            current_eye = last_eye_value
-            current_gaze_x = last_gaze_x
-            current_gaze_y = last_gaze_y
-            last_change = last_change_time
-            logs = list(event_logs)
-            
-        time_since_change = time.time() - last_change if current_eye is not None else 0
-        
-        ui_text = (
-            f"=== OSC Proxy Dashboard ===\n"
-            f"Port: Listen({RECEIVE_PORT}) -> Send({SEND_PORT})\n"
-            f"---------------------------\n"
-            f"Messages / sec: {mps}\n"
-            f"Sleep Mode:     {'[ ON ] (Eyes Closed)' if current_sleep else '[ OFF ] (Active)'}\n"
-            f"Last Eye Move:  {time_since_change:.1f}s ago (Timeout: {config['sleep_mode']['timeout_seconds']}s)\n"
-        )
-        
-        if current_eye is not None:
-            output_val = config["sleep_mode"]["closed_value"] if current_sleep and config["sleep_mode"]["enabled"] else current_eye
-            ui_text += f"Current Eye:    In={current_eye:.3f} | Out={output_val:.3f}\n"
-        else:
-            ui_text += f"Current Eye:    Waiting for data...\n"
-            
-        if current_gaze_x is not None or current_gaze_y is not None:
-            gx = current_gaze_x if current_gaze_x is not None else 0.0
-            gy = current_gaze_y if current_gaze_y is not None else 0.0
-            ui_text += f"Current Gaze:   X={gx:+.3f} | Y={gy:+.3f}\n"
-        else:
-            ui_text += f"Current Gaze:   Waiting for data...\n"
-            
-        ui_text += "---------------------------\n"
-        ui_text += "Recent Events:\n"
-        if not logs:
-            ui_text += " No events yet.\n"
-        for log in logs:
-            ui_text += f" {log}\n"
-            
-        # 前回描画した行数分カーソルを上に移動し、そこから下を消去する
-        if last_lines_count > 0:
-            sys.stdout.write(f"\033[{last_lines_count}F\033[J")
-            
-        sys.stdout.write(ui_text)
-        sys.stdout.flush()
-        
-        last_lines_count = ui_text.count('\n')
+            sleep_status = "ON" if is_sleeping else "OFF"
+        self.status_label.configure(text=f"Messages / sec: {mps} | Sleep: {sleep_status}")
+        self.after(1000, self.update_status)
 
 def monitor_steamvr(server):
-    # SteamVRの起動直後はプロセスが完全に立ち上がっていない可能性があるため少し待機
     time.sleep(10)
-    
     while True:
         is_running = False
-        # 実行中のすべてのプロセス名を取得して確認
         for proc in psutil.process_iter(['name']):
             try:
                 if proc.info['name'] == 'vrserver.exe':
@@ -249,16 +334,15 @@ def monitor_steamvr(server):
                     break
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
-        
-        # SteamVRが終了していたらサーバーをシャットダウンしてループを抜ける
         if not is_running:
             server.shutdown()
-            break
-        
-        # 5秒間隔でチェック
+            os._exit(0) # Also terminate the GUI if steamvr is closed
         time.sleep(5)
 
 if __name__ == "__main__":
+    ctk.set_appearance_mode("Dark")
+    ctk.set_default_color_theme("blue")
+    
     disp = dispatcher.Dispatcher()
     disp.set_default_handler(default_handler)
 
@@ -305,19 +389,20 @@ if __name__ == "__main__":
                 sys.exit(1)
         else:
             raise
-    
+
     # SteamVR監視用のバックグラウンドスレッドを開始
     monitor_thread = threading.Thread(target=monitor_steamvr, args=(server,), daemon=True)
     monitor_thread.start()
 
-    # UI用のバックグラウンドスレッドを開始
-    ui_thread = threading.Thread(target=ui_loop, daemon=True)
-    ui_thread.start()
+    # OSCサーバーをバックグラウンドで開始
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
 
-    with state_lock:
-        event_logs.append(f"[{time.strftime('%H:%M:%S')}] OSC Proxy started.")
+    print(f"[{time.strftime('%H:%M:%S')}] OSC Proxy started with GUI.")
     
-    # ここでブロックされ、OSCの受信を続ける（server.shutdown()が呼ばれるまで）
-    server.serve_forever()
+    # メインスレッドでGUIを実行
+    app = OSCProxyGUI()
+    app.mainloop()
     
+    server.shutdown()
     print("\nOSC Proxy shut down successfully.")
