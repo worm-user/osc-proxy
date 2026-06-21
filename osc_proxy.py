@@ -3,6 +3,7 @@ import time
 import psutil
 import os
 import sys
+import json
 from pythonosc import dispatcher, osc_server, udp_client
 
 # 受信ポート（Baballoniaからの送信先ポートに合わせる）
@@ -11,10 +12,44 @@ RECEIVE_PORT = 8887
 SEND_PORT = 8888
 IP_ADDRESS = "127.0.0.1"
 
-# --- スリープモード（自動目閉じ）設定 ---
-SLEEP_TIMEOUT = 300.0       # この秒数以上変化がなければスリープモードに入る（例: 60秒）
-CHANGE_THRESHOLD = 0.20     # これ以上パラメータが変化したら「変化した」とみなす閾値
-CLOSED_VALUE = 0.0          # 目を閉じた状態のパラメータ値（アバターや設定によって 0.0 または 1.0 に変更してください）
+CONFIG_FILE = "config.json"
+DEFAULT_CONFIG = {
+    "sleep_mode": {
+        "enabled": True,
+        "timeout_seconds": 300.0,
+        "change_threshold": 0.20,
+        "closed_value": 0.0
+    },
+    "sync": {
+        "eyelid_enabled": True,
+        "gaze_enabled": True
+    }
+}
+
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(DEFAULT_CONFIG, f, indent=4)
+        except Exception as e:
+            print(f"Error creating config.json: {e}")
+        return DEFAULT_CONFIG
+
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            user_config = json.load(f)
+            
+        config = DEFAULT_CONFIG.copy()
+        if "sleep_mode" in user_config:
+            config["sleep_mode"].update(user_config["sleep_mode"])
+        if "sync" in user_config:
+            config["sync"].update(user_config["sync"])
+        return config
+    except Exception as e:
+        print(f"Error reading config.json: {e}. Using default settings.")
+        return DEFAULT_CONFIG
+
+config = load_config()
 
 client = udp_client.SimpleUDPClient(IP_ADDRESS, SEND_PORT)
 
@@ -38,28 +73,30 @@ def default_handler(address, *args):
         incoming_value = args[0] if len(args) > 0 else 0.0
 
         with state_lock:
-            # 初回データまたは一定以上の変化があった場合
-            if last_eye_value is None or abs(incoming_value - last_eye_value) >= CHANGE_THRESHOLD:
-                last_eye_value = incoming_value
-                last_change_time = current_time
-                if is_sleeping:
-                    event_logs.append(f"[{time.strftime('%H:%M:%S')}] Eye movement detected. Exiting sleep mode.")
-                    if len(event_logs) > 5: event_logs.pop(0)
-                is_sleeping = False
-            else:
-                # 一定時間変化がないかチェック
-                if current_time - last_change_time >= SLEEP_TIMEOUT:
-                    if not is_sleeping:
-                        event_logs.append(f"[{time.strftime('%H:%M:%S')}] No eye movement for {SLEEP_TIMEOUT}s. Entering sleep mode.")
+            if config["sleep_mode"]["enabled"]:
+                # 初回データまたは一定以上の変化があった場合
+                if last_eye_value is None or abs(incoming_value - last_eye_value) >= config["sleep_mode"]["change_threshold"]:
+                    last_eye_value = incoming_value
+                    last_change_time = current_time
+                    if is_sleeping:
+                        event_logs.append(f"[{time.strftime('%H:%M:%S')}] Eye movement detected. Exiting sleep mode.")
                         if len(event_logs) > 5: event_logs.pop(0)
-                    is_sleeping = True
-            
-            # スリープ中なら目を閉じた値に固定、そうでなければ受信した値をそのまま使用
-            output_value = CLOSED_VALUE if is_sleeping else incoming_value
+                    is_sleeping = False
+                else:
+                    # 一定時間変化がないかチェック
+                    if current_time - last_change_time >= config["sleep_mode"]["timeout_seconds"]:
+                        if not is_sleeping:
+                            event_logs.append(f"[{time.strftime('%H:%M:%S')}] No eye movement for {config['sleep_mode']['timeout_seconds']}s. Entering sleep mode.")
+                            if len(event_logs) > 5: event_logs.pop(0)
+                        is_sleeping = True
+                
+                # スリープ中なら目を閉じた値に固定、そうでなければ受信した値をそのまま使用
+                output_value = config["sleep_mode"]["closed_value"] if is_sleeping else incoming_value
+            else:
+                last_eye_value = incoming_value
+                is_sleeping = False
+                output_value = incoming_value
 
-        # 左右の目に同じ値を送信
-        left_address = address.replace("RightEyeLid", "LeftEyeLid")
-        
         # 元の引数リストをコピーして、最初の値をoutput_valueに置き換える
         output_args = list(args)
         if len(output_args) > 0:
@@ -67,39 +104,74 @@ def default_handler(address, *args):
         else:
             output_args = [output_value]
             
-        client.send_message(left_address, output_args)
-        client.send_message(address, output_args)
-        
-        with state_lock:
-            msg_sent_count += 2
+        if config["sync"]["eyelid_enabled"]:
+            left_address = address.replace("RightEyeLid", "LeftEyeLid")
+            client.send_message(left_address, output_args)
+            client.send_message(address, output_args)
+            with state_lock:
+                msg_sent_count += 2
+        else:
+            client.send_message(address, output_args)
+            with state_lock:
+                msg_sent_count += 1
 
     elif "LeftEyeLid" in address:
-        # 左目のデータは右目のデータで上書きするため無視
-        pass
+        if config["sync"]["eyelid_enabled"]:
+            # 左目のデータは右目のデータで上書きするため無視
+            pass
+        else:
+            incoming_value = args[0] if len(args) > 0 else 0.0
+            with state_lock:
+                output_value = config["sleep_mode"]["closed_value"] if is_sleeping and config["sleep_mode"]["enabled"] else incoming_value
+            output_args = list(args)
+            if len(output_args) > 0:
+                output_args[0] = output_value
+            else:
+                output_args = [output_value]
+            client.send_message(address, output_args)
+            with state_lock:
+                msg_sent_count += 1
 
     elif any(k in address for k in ["RightEyeX", "EyeRightX"]):
-        left_address = address.replace("RightEyeX", "LeftEyeX") if "RightEyeX" in address else address.replace("EyeRightX", "EyeLeftX")
         incoming_value = args[0] if len(args) > 0 else 0.0
         with state_lock:
             last_gaze_x = incoming_value
-        client.send_message(left_address, args)
-        client.send_message(address, args)
-        with state_lock:
-            msg_sent_count += 2
+            
+        if config["sync"]["gaze_enabled"]:
+            left_address = address.replace("RightEyeX", "LeftEyeX") if "RightEyeX" in address else address.replace("EyeRightX", "EyeLeftX")
+            client.send_message(left_address, args)
+            client.send_message(address, args)
+            with state_lock:
+                msg_sent_count += 2
+        else:
+            client.send_message(address, args)
+            with state_lock:
+                msg_sent_count += 1
 
     elif any(k in address for k in ["RightEyeY", "EyeRightY"]):
-        left_address = address.replace("RightEyeY", "LeftEyeY") if "RightEyeY" in address else address.replace("EyeRightY", "EyeLeftY")
         incoming_value = args[0] if len(args) > 0 else 0.0
         with state_lock:
             last_gaze_y = incoming_value
-        client.send_message(left_address, args)
-        client.send_message(address, args)
-        with state_lock:
-            msg_sent_count += 2
+            
+        if config["sync"]["gaze_enabled"]:
+            left_address = address.replace("RightEyeY", "LeftEyeY") if "RightEyeY" in address else address.replace("EyeRightY", "EyeLeftY")
+            client.send_message(left_address, args)
+            client.send_message(address, args)
+            with state_lock:
+                msg_sent_count += 2
+        else:
+            client.send_message(address, args)
+            with state_lock:
+                msg_sent_count += 1
 
     elif any(k in address for k in ["LeftEyeX", "LeftEyeY", "EyeLeftX", "EyeLeftY"]):
-        # 左目の視線データは右目のデータで上書きするため無視
-        pass
+        if config["sync"]["gaze_enabled"]:
+            # 左目の視線データは右目のデータで上書きするため無視
+            pass
+        else:
+            client.send_message(address, args)
+            with state_lock:
+                msg_sent_count += 1
 
     else:
         client.send_message(address, args)
@@ -131,11 +203,11 @@ def ui_loop():
             f"---------------------------\n"
             f"Messages / sec: {mps}\n"
             f"Sleep Mode:     {'[ ON ] (Eyes Closed)' if current_sleep else '[ OFF ] (Active)'}\n"
-            f"Last Eye Move:  {time_since_change:.1f}s ago (Timeout: {SLEEP_TIMEOUT}s)\n"
+            f"Last Eye Move:  {time_since_change:.1f}s ago (Timeout: {config['sleep_mode']['timeout_seconds']}s)\n"
         )
         
         if current_eye is not None:
-            output_val = CLOSED_VALUE if current_sleep else current_eye
+            output_val = config["sleep_mode"]["closed_value"] if current_sleep and config["sleep_mode"]["enabled"] else current_eye
             ui_text += f"Current Eye:    In={current_eye:.3f} | Out={output_val:.3f}\n"
         else:
             ui_text += f"Current Eye:    Waiting for data...\n"
