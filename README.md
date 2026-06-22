@@ -1,4 +1,4 @@
-# OSC Proxy for Eye Tracking / VR (OSCアイプロキシ)
+﻿# OSC Proxy for Eye Tracking / VR (OSCアイプロキシ)
 
 アイトラッキングデバイス（Baballonia等）から受信した眼球（Gaze）および眼瞼（Eyelid）のOSCパラメータを、任意の比率で合成・キャリブレーションして、VRChatやVRCFaceTrackingなどへ中継（Proxy）するためのアプリケーションです。
 
