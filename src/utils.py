@@ -41,39 +41,39 @@ def resolve_port_conflict(port, disp, ip_address="127.0.0.1"):
     print(f"\n[エラー] ポート {port} が既に使用されています（プロセスの特定または停止ができませんでした）。")
     sys.exit(1)
 
+def is_steamvr_running():
+    for proc in psutil.process_iter(['name']):
+        try:
+            if proc.info['name'] == 'vrserver.exe':
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return False
+
 def monitor_steamvr(server):
     time.sleep(30)
     while True:
-        is_running = False
-        for proc in psutil.process_iter(['name']):
-            try:
-                if proc.info['name'] == 'vrserver.exe':
-                    is_running = True
-                    break
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-        if not is_running:
+        if not is_steamvr_running():
             server.shutdown()
             os._exit(0) # Also terminate the GUI if steamvr is closed
         time.sleep(5)
 
-def register_steamvr_manifest(log_callback=None):
+def register_steamvr_manifest(config=None, log_callback=None):
     def log(msg):
         if log_callback:
             log_callback(msg)
         else:
             print(msg)
             
-    is_running = False
-    for proc in psutil.process_iter(['name']):
-        try:
-            if proc.info['name'] == 'vrserver.exe':
-                is_running = True
-                break
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
+    if config is None:
+        config = {
+            "steamvr": {
+                "auto_launch": True,
+                "manifest_registered": False
+            }
+        }
             
-    if not is_running:
+    if not is_steamvr_running():
         log("SteamVRが起動していません。自動起動登録をスキップしました。")
         return False
         
@@ -91,15 +91,29 @@ def register_steamvr_manifest(log_callback=None):
         openvr.init(openvr.VRApplication_Utility)
         
         apps = openvr.VRApplications()
-        if apps.isApplicationInstalled("custom.osc.eyeproxy"):
-            openvr.shutdown()
-            return True
-            
-        apps.addApplicationManifest(manifest_path)
-        log("マニフェストの登録に成功しました！")
+        is_installed = apps.isApplicationInstalled("custom.osc.eyeproxy")
+        target_auto_launch = config.get("steamvr", {}).get("auto_launch", True)
         
-        apps.setApplicationAutoLaunch("custom.osc.eyeproxy", True)
-        log("SteamVR起動時の自動実行を有効化しました。")
+        if not is_installed:
+            apps.addApplicationManifest(manifest_path)
+            log("マニフェストの登録に成功しました！")
+            
+            apps.setApplicationAutoLaunch("custom.osc.eyeproxy", target_auto_launch)
+            status_str = "有効化" if target_auto_launch else "無効化"
+            log(f"SteamVR起動時の自動実行を{status_str}しました。")
+        else:
+            # Sync auto launch status if different
+            try:
+                current_auto_launch = apps.getApplicationAutoLaunch("custom.osc.eyeproxy")
+                if current_auto_launch != target_auto_launch:
+                    apps.setApplicationAutoLaunch("custom.osc.eyeproxy", target_auto_launch)
+                    status_str = "有効化" if target_auto_launch else "無効化"
+                    log(f"SteamVRの自動起動設定を{status_str}に同期しました。")
+            except Exception as e:
+                log(f"自動起動状態の確認中にエラー: {e}")
+            
+        # Update config flags
+        config["steamvr"]["manifest_registered"] = True
         
         openvr.shutdown()
         return True

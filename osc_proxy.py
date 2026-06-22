@@ -6,7 +6,7 @@ from pythonosc import dispatcher, osc_server, udp_client
 from src.config_manager import load_config, state_lock
 from src.osc_handler import OSCMessageHandler
 from src.gui import OSCProxyGUI
-from src.utils import resolve_port_conflict, monitor_steamvr, register_steamvr_manifest
+from src.utils import resolve_port_conflict, monitor_steamvr, register_steamvr_manifest, is_steamvr_running
 
 # 受信ポート（Baballoniaからの送信先ポートに合わせる）
 RECEIVE_PORT = 8887
@@ -51,17 +51,23 @@ if __name__ == "__main__":
     # Log startup messages
     app.log_message(f"OSC Proxyが起動しました (受信ポート: {RECEIVE_PORT}, 送信ポート: {SEND_PORT})")
     
-    # Run SteamVR auto-registration in a background thread if enabled
+    # Run SteamVR auto-registration in a background thread
     def run_auto_registration():
         time.sleep(0.5) # GUIがマウントされるまでわずかに待つ
-        app.log_message("SteamVR自動起動マニフェストのチェックを開始...")
-        register_steamvr_manifest(app.log_message)
+        from src.utils import is_steamvr_running
+        if is_steamvr_running():
+            app.log_message("SteamVRの起動を検知しました。マニフェスト登録状況をチェックしています...")
+            success = register_steamvr_manifest(config, app.log_message)
+            if success:
+                from src.config_manager import save_config
+                save_config(config)
+        else:
+            if not config.get("steamvr", {}).get("manifest_registered", False):
+                app.log_message("SteamVRが起動していません。初回起動時のマニフェスト登録を行えませんでした。")
+                app.log_message("※自動起動を有効化するには、SteamVRを起動した状態で本アプリを起動するか、register.pyを実行してください。")
 
-    if config.get("steamvr", {}).get("auto_register", True):
-        reg_thread = threading.Thread(target=run_auto_registration, daemon=True)
-        reg_thread.start()
-    else:
-        app.log_message("SteamVRへの自動起動登録は設定によりオフになっています。")
+    reg_thread = threading.Thread(target=run_auto_registration, daemon=True)
+    reg_thread.start()
         
     app.mainloop()
     

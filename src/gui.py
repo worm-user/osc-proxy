@@ -250,10 +250,25 @@ class OSCProxyGUI(ctk.CTk):
         header.pack(fill="x", padx=10, pady=5)
         ctk.CTkLabel(header, text="SteamVR Settings", font=("Arial", 16, "bold")).pack(side="left")
         
-        self.steamvr_enabled = ctk.BooleanVar(value=self.config["steamvr"]["auto_register"])
-        cb = ctk.CTkCheckBox(section, text="Auto-Register Manifest on Startup", variable=self.steamvr_enabled, command=self.on_steamvr_change)
+        self.steamvr_enabled = ctk.BooleanVar(value=self.config["steamvr"]["auto_launch"])
+        cb = ctk.CTkCheckBox(section, text="SteamVR起動時に自動実行", variable=self.steamvr_enabled, command=self.on_steamvr_change)
         cb.pack(anchor="w", padx=20, pady=10)
 
     def on_steamvr_change(self):
+        enabled = self.steamvr_enabled.get()
         with state_lock:
-            self.config["steamvr"]["auto_register"] = self.steamvr_enabled.get()
+            self.config["steamvr"]["auto_launch"] = enabled
+        
+        from src.utils import is_steamvr_running
+        if is_steamvr_running():
+            try:
+                import openvr
+                openvr.init(openvr.VRApplication_Utility)
+                apps = openvr.VRApplications()
+                if apps.isApplicationInstalled("custom.osc.eyeproxy"):
+                    apps.setApplicationAutoLaunch("custom.osc.eyeproxy", enabled)
+                    status_str = "有効化" if enabled else "無効化"
+                    self.log_message(f"SteamVRの自動起動設定を{status_str}しました。")
+                openvr.shutdown()
+            except Exception as e:
+                self.log_message(f"自動起動設定の変更中にエラー: {e}")

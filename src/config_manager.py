@@ -27,7 +27,8 @@ DEFAULT_CONFIG = {
         "left_gaze_y_offset": 0.0
     },
     "steamvr": {
-        "auto_register": True
+        "auto_launch": True,
+        "manifest_registered": False
     }
 }
 
@@ -59,6 +60,8 @@ def load_config():
         if "calibration" in user_config:
             config["calibration"].update(user_config["calibration"])
         if "steamvr" in user_config:
+            if "auto_register" in user_config["steamvr"]:
+                user_config["steamvr"]["auto_launch"] = user_config["steamvr"].pop("auto_register")
             config["steamvr"].update(user_config["steamvr"])
         return config
     except Exception as e:
