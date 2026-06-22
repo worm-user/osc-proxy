@@ -91,6 +91,10 @@ def register_steamvr_manifest(log_callback=None):
         openvr.init(openvr.VRApplication_Utility)
         
         apps = openvr.VRApplications()
+        if apps.isApplicationInstalled("custom.osc.eyeproxy"):
+            openvr.shutdown()
+            return True
+            
         apps.addApplicationManifest(manifest_path)
         log("マニフェストの登録に成功しました！")
         
