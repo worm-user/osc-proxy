@@ -6,7 +6,7 @@ from pythonosc import dispatcher, osc_server, udp_client
 from src.config_manager import load_config, state_lock
 from src.osc_handler import OSCMessageHandler
 from src.gui import OSCProxyGUI
-from src.utils import resolve_port_conflict, monitor_steamvr
+from src.utils import resolve_port_conflict, monitor_steamvr, register_steamvr_manifest
 
 # 受信ポート（Baballoniaからの送信先ポートに合わせる）
 RECEIVE_PORT = 8887
@@ -47,6 +47,22 @@ if __name__ == "__main__":
     ctk.set_default_color_theme("blue")
     
     app = OSCProxyGUI(handler, config)
+    
+    # Log startup messages
+    app.log_message(f"OSC Proxyが起動しました (受信ポート: {RECEIVE_PORT}, 送信ポート: {SEND_PORT})")
+    
+    # Run SteamVR auto-registration in a background thread if enabled
+    def run_auto_registration():
+        time.sleep(0.5) # GUIがマウントされるまでわずかに待つ
+        app.log_message("SteamVR自動起動マニフェストのチェックを開始...")
+        register_steamvr_manifest(app.log_message)
+
+    if config.get("steamvr", {}).get("auto_register", True):
+        reg_thread = threading.Thread(target=run_auto_registration, daemon=True)
+        reg_thread.start()
+    else:
+        app.log_message("SteamVRへの自動起動登録は設定によりオフになっています。")
+        
     app.mainloop()
     
     # 6. Shutdown

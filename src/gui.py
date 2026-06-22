@@ -1,3 +1,4 @@
+import time
 import customtkinter as ctk
 from src.config_manager import state_lock, DEFAULT_CONFIG, save_config
 
@@ -7,7 +8,7 @@ class OSCProxyGUI(ctk.CTk):
         self.handler = handler
         self.config = config
         self.title("OSC Proxy Configuration")
-        self.geometry("850x600")
+        self.geometry("850x680")
         self.resizable(False, False)
         
         # Banner
@@ -17,7 +18,17 @@ class OSCProxyGUI(ctk.CTk):
         self.banner_label = ctk.CTkLabel(self.banner_frame, text="STATUS: ACTIVE", font=("Arial", 20, "bold"), text_color="white")
         self.banner_label.pack(expand=True)
         
-        # Main Layout
+        # Event Log Frame (bottom)
+        self.log_frame = ctk.CTkFrame(self)
+        self.log_frame.pack(fill="x", side="bottom", padx=10, pady=(5, 10))
+        
+        ctk.CTkLabel(self.log_frame, text="Event Log", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=(2, 2))
+        
+        self.log_textbox = ctk.CTkTextbox(self.log_frame, height=100, font=("Consolas", 11))
+        self.log_textbox.pack(fill="x", padx=10, pady=(0, 10))
+        self.log_textbox.configure(state="disabled")
+        
+        # Main Layout (middle)
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
@@ -36,6 +47,7 @@ class OSCProxyGUI(ctk.CTk):
         
         self.create_calibration_section(self.right_col)
         self.create_sleep_section(self.right_col)
+        self.create_steamvr_section(self.right_col)
         
         # Status Label and Save Button
         bottom_frame = ctk.CTkFrame(self.right_col, fg_color="transparent")
@@ -47,10 +59,18 @@ class OSCProxyGUI(ctk.CTk):
         save_btn = ctk.CTkButton(bottom_frame, text="Save Config to File", font=("Arial", 16, "bold"), height=45, command=self.do_save)
         save_btn.pack(fill="x")
         
+        self.last_sleeping_state = False
         self.update_status()
 
     def do_save(self):
         save_config(self.config)
+        self.log_message("設定を config.json に保存しました。")
+
+    def log_message(self, msg):
+        self.log_textbox.configure(state="normal")
+        self.log_textbox.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        self.log_textbox.see("end")
+        self.log_textbox.configure(state="disabled")
 
     def create_mix_section(self, parent, title, config_key):
         section = ctk.CTkFrame(parent)
@@ -99,6 +119,7 @@ class OSCProxyGUI(ctk.CTk):
                 slider, val_lbl = self.sliders[f"{config_key}_{side_out}_{side_in}"]
                 slider.set(val)
                 val_lbl.configure(text=f"{val:.2f}")
+        self.log_message(f"{config_key.capitalize()} Mix設定を初期値にリセットしました。")
 
     def create_calibration_section(self, parent):
         section = ctk.CTkFrame(parent)
@@ -114,6 +135,7 @@ class OSCProxyGUI(ctk.CTk):
 
     def start_calibration(self):
         self.calib_btn.configure(state="disabled")
+        self.log_message("センターキャリブレーションを開始しました。3秒間正面を向いてください...")
         self.calib_countdown(3)
 
     def calib_countdown(self, seconds):
@@ -132,10 +154,12 @@ class OSCProxyGUI(ctk.CTk):
             self.config["calibration"]["right_gaze_y_offset"] = ry
             self.config["calibration"]["left_gaze_y_offset"] = ly
         self.calib_btn.configure(text="Calibrate Center", state="normal")
+        self.log_message(f"センターキャリブレーション完了: 右目オフセット({rx:.2f}, {ry:.2f}) 左目オフセット({lx:.2f}, {ly:.2f}) を設定しました。")
 
     def reset_calibration(self):
         with state_lock:
             self.config["calibration"] = DEFAULT_CONFIG["calibration"].copy()
+        self.log_message("キャリブレーション設定を初期値にリセットしました。")
 
     def create_sleep_section(self, parent):
         section = ctk.CTkFrame(parent)
@@ -196,6 +220,7 @@ class OSCProxyGUI(ctk.CTk):
         self.threshold_entry.insert(0, str(default["change_threshold"]))
         self.closed_val_entry.delete(0, 'end')
         self.closed_val_entry.insert(0, str(default["closed_value"]))
+        self.log_message("スリープモード設定を初期値にリセットしました。")
 
     def update_status(self):
         mps, is_sleeping = self.handler.get_status()
@@ -208,4 +233,27 @@ class OSCProxyGUI(ctk.CTk):
             self.banner_frame.configure(fg_color="#388E3C") # Green
             self.banner_label.configure(text="STATUS: ACTIVE")
             
+        if is_sleeping != self.last_sleeping_state:
+            self.last_sleeping_state = is_sleeping
+            if is_sleeping:
+                self.log_message("スリープ状態（SLEEPING）になりました。目を閉じた状態（Closed Value）に固定します。")
+            else:
+                self.log_message("アクティブ状態（ACTIVE）に戻りました。")
+                
         self.after(500, self.update_status)
+
+    def create_steamvr_section(self, parent):
+        section = ctk.CTkFrame(parent)
+        section.pack(fill="x", pady=(0, 10))
+        
+        header = ctk.CTkFrame(section, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=5)
+        ctk.CTkLabel(header, text="SteamVR Settings", font=("Arial", 16, "bold")).pack(side="left")
+        
+        self.steamvr_enabled = ctk.BooleanVar(value=self.config["steamvr"]["auto_register"])
+        cb = ctk.CTkCheckBox(section, text="Auto-Register Manifest on Startup", variable=self.steamvr_enabled, command=self.on_steamvr_change)
+        cb.pack(anchor="w", padx=20, pady=10)
+
+    def on_steamvr_change(self):
+        with state_lock:
+            self.config["steamvr"]["auto_register"] = self.steamvr_enabled.get()

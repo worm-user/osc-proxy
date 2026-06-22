@@ -56,3 +56,55 @@ def monitor_steamvr(server):
             server.shutdown()
             os._exit(0) # Also terminate the GUI if steamvr is closed
         time.sleep(5)
+
+def register_steamvr_manifest(log_callback=None):
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+        else:
+            print(msg)
+            
+    is_running = False
+    for proc in psutil.process_iter(['name']):
+        try:
+            if proc.info['name'] == 'vrserver.exe':
+                is_running = True
+                break
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+            
+    if not is_running:
+        log("SteamVRが起動していません。自動起動登録をスキップしました。")
+        return False
+        
+    try:
+        import openvr
+        manifest_path = os.path.abspath("osc_proxy.vrmanifest")
+        if not os.path.exists(manifest_path):
+            base_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+            manifest_path = os.path.join(base_dir, "osc_proxy.vrmanifest")
+            
+        if not os.path.exists(manifest_path):
+            log(f"エラー: マニフェストファイル '{manifest_path}' が見つかりません。")
+            return False
+            
+        openvr.init(openvr.VRApplication_Utility)
+        
+        apps = openvr.VRApplications()
+        apps.addApplicationManifest(manifest_path)
+        log("マニフェストの登録に成功しました！")
+        
+        apps.setApplicationAutoLaunch("custom.osc.eyeproxy", True)
+        log("SteamVR起動時の自動実行を有効化しました。")
+        
+        openvr.shutdown()
+        return True
+    except openvr.OpenVRError as e:
+        log(f"OpenVRエラー: {e}")
+        return False
+    except ImportError:
+        log("エラー: 'openvr' パッケージがインストールされていません。")
+        return False
+    except Exception as e:
+        log(f"登録エラー: {e}")
+        return False

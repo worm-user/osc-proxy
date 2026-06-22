@@ -25,6 +25,9 @@ DEFAULT_CONFIG = {
         "left_gaze_x_offset": 0.0,
         "right_gaze_y_offset": 0.0,
         "left_gaze_y_offset": 0.0
+    },
+    "steamvr": {
+        "auto_register": True
     }
 }
 
@@ -55,6 +58,8 @@ def load_config():
             config["mix"].pop("gaze_y", None)
         if "calibration" in user_config:
             config["calibration"].update(user_config["calibration"])
+        if "steamvr" in user_config:
+            config["steamvr"].update(user_config["steamvr"])
         return config
     except Exception as e:
         print(f"Error reading config.json: {e}. Using default settings.")
