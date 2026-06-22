@@ -26,14 +26,16 @@ DEFAULT_CONFIG = {
             "right_out": { "right_in": 1.0, "left_in": 0.0 },
             "left_out":  { "right_in": 1.0, "left_in": 0.0 }
         },
-        "gaze_x": {
-            "right_out": { "right_in": 1.0, "left_in": 0.0 },
-            "left_out":  { "right_in": 1.0, "left_in": 0.0 }
-        },
-        "gaze_y": {
+        "gaze": {
             "right_out": { "right_in": 1.0, "left_in": 0.0 },
             "left_out":  { "right_in": 1.0, "left_in": 0.0 }
         }
+    },
+    "calibration": {
+        "right_gaze_x_offset": 0.0,
+        "left_gaze_x_offset": 0.0,
+        "right_gaze_y_offset": 0.0,
+        "left_gaze_y_offset": 0.0
     }
 }
 
@@ -54,17 +56,20 @@ def load_config():
         if "sleep_mode" in user_config:
             config["sleep_mode"].update(user_config["sleep_mode"])
         if "mix" in user_config:
+            if "gaze_x" in user_config["mix"] and "gaze" not in user_config["mix"]:
+                config["mix"]["gaze"] = user_config["mix"]["gaze_x"]
             config["mix"].update(user_config["mix"])
+            config["mix"].pop("gaze_x", None)
+            config["mix"].pop("gaze_y", None)
+        if "calibration" in user_config:
+            config["calibration"].update(user_config["calibration"])
         return config
     except Exception as e:
         print(f"Error reading config.json: {e}. Using default settings.")
         return DEFAULT_CONFIG
 
 config = load_config()
-
 client = udp_client.SimpleUDPClient(IP_ADDRESS, SEND_PORT)
-
-# 状態管理用ロック
 state_lock = threading.Lock()
 
 class OSCMessageHandler:
@@ -80,10 +85,11 @@ class OSCMessageHandler:
         
         self.in_right_lid = 0.0
         self.in_left_lid = 0.0
-        self.in_right_gaze_x = 0.0
-        self.in_left_gaze_x = 0.0
-        self.in_right_gaze_y = 0.0
-        self.in_left_gaze_y = 0.0
+        
+        self.raw_right_gaze_x = 0.0
+        self.raw_left_gaze_x = 0.0
+        self.raw_right_gaze_y = 0.0
+        self.raw_left_gaze_y = 0.0
 
     def get_status(self):
         with self.lock:
@@ -91,6 +97,10 @@ class OSCMessageHandler:
             self.msg_sent_count = 0
             is_sleeping = self.is_sleeping
         return count, is_sleeping
+
+    def get_raw_gaze(self):
+        with self.lock:
+            return self.raw_right_gaze_x, self.raw_left_gaze_x, self.raw_right_gaze_y, self.raw_left_gaze_y
 
     def handle(self, address, *args):
         incoming_value = args[0] if len(args) > 0 else 0.0
@@ -140,13 +150,16 @@ class OSCMessageHandler:
         is_right = "RightEyeX" in address or "EyeRightX" in address
         with self.lock:
             if is_right:
-                self.in_right_gaze_x = incoming_value
+                self.raw_right_gaze_x = incoming_value
             else:
-                self.in_left_gaze_x = incoming_value
+                self.raw_left_gaze_x = incoming_value
                 
-            mix_cfg = self.config["mix"]["gaze_x"]
-            out_right = self.in_right_gaze_x * mix_cfg["right_out"]["right_in"] + self.in_left_gaze_x * mix_cfg["right_out"]["left_in"]
-            out_left  = self.in_right_gaze_x * mix_cfg["left_out"]["right_in"]  + self.in_left_gaze_x * mix_cfg["left_out"]["left_in"]
+            calib_rx = self.raw_right_gaze_x - self.config["calibration"]["right_gaze_x_offset"]
+            calib_lx = self.raw_left_gaze_x - self.config["calibration"]["left_gaze_x_offset"]
+            
+            mix_cfg = self.config["mix"]["gaze"]
+            out_right = calib_rx * mix_cfg["right_out"]["right_in"] + calib_lx * mix_cfg["right_out"]["left_in"]
+            out_left  = calib_rx * mix_cfg["left_out"]["right_in"]  + calib_lx * mix_cfg["left_out"]["left_in"]
 
         self._send_gaze_messages(address, is_right, "EyeX", out_right, out_left, args)
 
@@ -154,13 +167,16 @@ class OSCMessageHandler:
         is_right = "RightEyeY" in address or "EyeRightY" in address
         with self.lock:
             if is_right:
-                self.in_right_gaze_y = incoming_value
+                self.raw_right_gaze_y = incoming_value
             else:
-                self.in_left_gaze_y = incoming_value
+                self.raw_left_gaze_y = incoming_value
                 
-            mix_cfg = self.config["mix"]["gaze_y"]
-            out_right = self.in_right_gaze_y * mix_cfg["right_out"]["right_in"] + self.in_left_gaze_y * mix_cfg["right_out"]["left_in"]
-            out_left  = self.in_right_gaze_y * mix_cfg["left_out"]["right_in"]  + self.in_left_gaze_y * mix_cfg["left_out"]["left_in"]
+            calib_ry = self.raw_right_gaze_y - self.config["calibration"]["right_gaze_y_offset"]
+            calib_ly = self.raw_left_gaze_y - self.config["calibration"]["left_gaze_y_offset"]
+            
+            mix_cfg = self.config["mix"]["gaze"]
+            out_right = calib_ry * mix_cfg["right_out"]["right_in"] + calib_ly * mix_cfg["right_out"]["left_in"]
+            out_left  = calib_ry * mix_cfg["left_out"]["right_in"]  + calib_ly * mix_cfg["left_out"]["left_in"]
 
         self._send_gaze_messages(address, is_right, "EyeY", out_right, out_left, args)
 
@@ -221,48 +237,70 @@ class OSCProxyGUI(ctk.CTk):
         super().__init__()
         self.handler = handler
         self.title("OSC Proxy Configuration")
-        self.geometry("600x650")
+        self.geometry("850x600")
+        self.resizable(False, False)
         
-        self.tabview = ctk.CTkTabview(self)
-        self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
+        # Banner
+        self.banner_frame = ctk.CTkFrame(self, fg_color="#388E3C", height=45)
+        self.banner_frame.pack(fill="x", padx=10, pady=(10, 5))
+        self.banner_frame.pack_propagate(False)
+        self.banner_label = ctk.CTkLabel(self.banner_frame, text="STATUS: ACTIVE", font=("Arial", 20, "bold"), text_color="white")
+        self.banner_label.pack(expand=True)
         
-        self.tabview.add("Eyelid")
-        self.tabview.add("Gaze X")
-        self.tabview.add("Gaze Y")
-        self.tabview.add("Sleep Mode")
+        # Main Layout
+        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Left Column (Mixes)
+        self.left_col = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.left_col.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        
+        # Right Column (Sleep, Calib, Save)
+        self.right_col = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.right_col.pack(side="right", fill="both", expand=True, padx=(5, 0))
         
         self.sliders = {}
         
-        self.create_mix_tab("Eyelid", "eyelid")
-        self.create_mix_tab("Gaze X", "gaze_x")
-        self.create_mix_tab("Gaze Y", "gaze_y")
-        self.create_sleep_tab()
+        self.create_mix_section(self.left_col, "Eyelid Mix", "eyelid")
+        self.create_mix_section(self.left_col, "Gaze Mix (X/Y Combined)", "gaze")
         
-        save_btn = ctk.CTkButton(self, text="Save Config", command=self.save_config)
-        save_btn.pack(pady=10)
+        self.create_calibration_section(self.right_col)
+        self.create_sleep_section(self.right_col)
         
-        self.status_label = ctk.CTkLabel(self, text="Messages / sec: 0 | Sleep: OFF", font=("Arial", 12))
+        # Status Label and Save Button
+        bottom_frame = ctk.CTkFrame(self.right_col, fg_color="transparent")
+        bottom_frame.pack(fill="x", side="bottom", pady=10)
+        
+        self.status_label = ctk.CTkLabel(bottom_frame, text="Messages / sec: 0", font=("Arial", 12))
         self.status_label.pack(pady=5)
+        
+        save_btn = ctk.CTkButton(bottom_frame, text="Save Config to File", font=("Arial", 16, "bold"), height=45, command=self.save_config)
+        save_btn.pack(fill="x")
+        
         self.update_status()
 
-    def create_mix_tab(self, tab_name, config_key):
-        tab = self.tabview.tab(tab_name)
+    def create_mix_section(self, parent, title, config_key):
+        section = ctk.CTkFrame(parent)
+        section.pack(fill="x", pady=(0, 10))
+        
+        header = ctk.CTkFrame(section, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=5)
+        ctk.CTkLabel(header, text=title, font=("Arial", 16, "bold")).pack(side="left")
+        ctk.CTkButton(header, text="Reset", width=60, height=24, command=lambda k=config_key: self.reset_mix(k)).pack(side="right")
         
         for side_out in ["right_out", "left_out"]:
-            frame = ctk.CTkFrame(tab)
-            frame.pack(fill="x", padx=10, pady=10)
+            frame = ctk.CTkFrame(section, fg_color="gray25")
+            frame.pack(fill="x", padx=10, pady=5)
             
-            label = ctk.CTkLabel(frame, text=f"Output: {side_out.replace('_', ' ').title()}", font=("Arial", 14, "bold"))
-            label.pack(anchor="w", padx=10, pady=5)
+            ctk.CTkLabel(frame, text=f"Output: {side_out.replace('_', ' ').title()}", font=("Arial", 13, "bold")).pack(anchor="w", padx=10, pady=2)
             
             for side_in in ["right_in", "left_in"]:
                 row = ctk.CTkFrame(frame, fg_color="transparent")
                 row.pack(fill="x", padx=10, pady=2)
                 
-                lbl = ctk.CTkLabel(row, text=f"From {side_in.replace('_', ' ').title()}:", width=120, anchor="e")
-                lbl.pack(side="left", padx=5)
+                ctk.CTkLabel(row, text=f"From {side_in.replace('_', ' ').title()}:", width=100, anchor="e").pack(side="left", padx=5)
                 
-                slider = ctk.CTkSlider(row, from_=-1.0, to=1.0, command=lambda v, k=config_key, o=side_out, i=side_in: self.on_mix_change(v, k, o, i))
+                slider = ctk.CTkSlider(row, from_=0.0, to=1.0, command=lambda v, k=config_key, o=side_out, i=side_in: self.on_mix_change(v, k, o, i))
                 slider.set(config["mix"][config_key][side_out][side_in])
                 slider.pack(side="left", fill="x", expand=True, padx=5)
                 
@@ -278,15 +316,68 @@ class OSCProxyGUI(ctk.CTk):
         slider, val_lbl = self.sliders[f"{config_key}_{side_out}_{side_in}"]
         val_lbl.configure(text=f"{val:.2f}")
 
-    def create_sleep_tab(self):
-        tab = self.tabview.tab("Sleep Mode")
+    def reset_mix(self, config_key):
+        default = DEFAULT_CONFIG["mix"][config_key]
+        for side_out in ["right_out", "left_out"]:
+            for side_in in ["right_in", "left_in"]:
+                val = default[side_out][side_in]
+                with state_lock:
+                    config["mix"][config_key][side_out][side_in] = val
+                slider, val_lbl = self.sliders[f"{config_key}_{side_out}_{side_in}"]
+                slider.set(val)
+                val_lbl.configure(text=f"{val:.2f}")
+
+    def create_calibration_section(self, parent):
+        section = ctk.CTkFrame(parent)
+        section.pack(fill="x", pady=(0, 10))
+        
+        header = ctk.CTkFrame(section, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=5)
+        ctk.CTkLabel(header, text="Gaze Calibration", font=("Arial", 16, "bold")).pack(side="left")
+        ctk.CTkButton(header, text="Reset", width=60, height=24, command=self.reset_calibration).pack(side="right")
+        
+        self.calib_btn = ctk.CTkButton(section, text="Calibrate Center", font=("Arial", 14), height=40, command=self.start_calibration)
+        self.calib_btn.pack(fill="x", padx=20, pady=10)
+
+    def start_calibration(self):
+        self.calib_btn.configure(state="disabled")
+        self.calib_countdown(3)
+
+    def calib_countdown(self, seconds):
+        if seconds > 0:
+            self.calib_btn.configure(text=f"Look straight ahead... {seconds}")
+            self.after(1000, self.calib_countdown, seconds - 1)
+        else:
+            self.calib_btn.configure(text="Capturing...")
+            self.after(100, self.execute_calibration)
+
+    def execute_calibration(self):
+        rx, lx, ry, ly = self.handler.get_raw_gaze()
+        with state_lock:
+            config["calibration"]["right_gaze_x_offset"] = rx
+            config["calibration"]["left_gaze_x_offset"] = lx
+            config["calibration"]["right_gaze_y_offset"] = ry
+            config["calibration"]["left_gaze_y_offset"] = ly
+        self.calib_btn.configure(text="Calibrate Center", state="normal")
+
+    def reset_calibration(self):
+        with state_lock:
+            config["calibration"] = DEFAULT_CONFIG["calibration"].copy()
+
+    def create_sleep_section(self, parent):
+        section = ctk.CTkFrame(parent)
+        section.pack(fill="x", pady=(0, 10))
+        
+        header = ctk.CTkFrame(section, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=5)
+        ctk.CTkLabel(header, text="Sleep Mode", font=("Arial", 16, "bold")).pack(side="left")
+        ctk.CTkButton(header, text="Reset", width=60, height=24, command=self.reset_sleep).pack(side="right")
         
         self.sleep_enabled = ctk.BooleanVar(value=config["sleep_mode"]["enabled"])
-        cb = ctk.CTkCheckBox(tab, text="Enable Sleep Mode", variable=self.sleep_enabled, command=self.on_sleep_change)
+        cb = ctk.CTkCheckBox(section, text="Enable Sleep Mode", variable=self.sleep_enabled, command=self.on_sleep_change)
         cb.pack(anchor="w", padx=20, pady=10)
         
-        # Timeout
-        row1 = ctk.CTkFrame(tab, fg_color="transparent")
+        row1 = ctk.CTkFrame(section, fg_color="transparent")
         row1.pack(fill="x", padx=20, pady=5)
         ctk.CTkLabel(row1, text="Timeout (sec):", width=120, anchor="e").pack(side="left", padx=5)
         self.timeout_entry = ctk.CTkEntry(row1)
@@ -294,8 +385,7 @@ class OSCProxyGUI(ctk.CTk):
         self.timeout_entry.pack(side="left", fill="x", expand=True)
         self.timeout_entry.bind("<KeyRelease>", self.on_sleep_change)
         
-        # Threshold
-        row2 = ctk.CTkFrame(tab, fg_color="transparent")
+        row2 = ctk.CTkFrame(section, fg_color="transparent")
         row2.pack(fill="x", padx=20, pady=5)
         ctk.CTkLabel(row2, text="Change Threshold:", width=120, anchor="e").pack(side="left", padx=5)
         self.threshold_entry = ctk.CTkEntry(row2)
@@ -303,8 +393,7 @@ class OSCProxyGUI(ctk.CTk):
         self.threshold_entry.pack(side="left", fill="x", expand=True)
         self.threshold_entry.bind("<KeyRelease>", self.on_sleep_change)
 
-        # Closed value
-        row3 = ctk.CTkFrame(tab, fg_color="transparent")
+        row3 = ctk.CTkFrame(section, fg_color="transparent")
         row3.pack(fill="x", padx=20, pady=5)
         ctk.CTkLabel(row3, text="Closed Value:", width=120, anchor="e").pack(side="left", padx=5)
         self.closed_val_entry = ctk.CTkEntry(row3)
@@ -322,6 +411,19 @@ class OSCProxyGUI(ctk.CTk):
             try: config["sleep_mode"]["closed_value"] = float(self.closed_val_entry.get())
             except: pass
 
+    def reset_sleep(self):
+        default = DEFAULT_CONFIG["sleep_mode"]
+        with state_lock:
+            config["sleep_mode"] = default.copy()
+        
+        self.sleep_enabled.set(default["enabled"])
+        self.timeout_entry.delete(0, 'end')
+        self.timeout_entry.insert(0, str(default["timeout_seconds"]))
+        self.threshold_entry.delete(0, 'end')
+        self.threshold_entry.insert(0, str(default["change_threshold"]))
+        self.closed_val_entry.delete(0, 'end')
+        self.closed_val_entry.insert(0, str(default["closed_value"]))
+
     def save_config(self):
         with state_lock:
             try:
@@ -333,9 +435,16 @@ class OSCProxyGUI(ctk.CTk):
 
     def update_status(self):
         mps, is_sleeping = self.handler.get_status()
-        sleep_status = "ON" if is_sleeping else "OFF"
-        self.status_label.configure(text=f"Messages / sec: {mps} | Sleep: {sleep_status}")
-        self.after(1000, self.update_status)
+        self.status_label.configure(text=f"Messages / sec: {mps}")
+        
+        if is_sleeping:
+            self.banner_frame.configure(fg_color="#D32F2F") # Red
+            self.banner_label.configure(text="STATUS: SLEEPING")
+        else:
+            self.banner_frame.configure(fg_color="#388E3C") # Green
+            self.banner_label.configure(text="STATUS: ACTIVE")
+            
+        self.after(500, self.update_status)
 
 def resolve_port_conflict(port, disp):
     try:
