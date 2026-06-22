@@ -64,123 +64,138 @@ config = load_config()
 
 client = udp_client.SimpleUDPClient(IP_ADDRESS, SEND_PORT)
 
-# 状態管理変数
+# 状態管理用ロック
 state_lock = threading.Lock()
-last_eye_value = None
-last_change_time = time.time()
-is_sleeping = False
-msg_sent_count = 0
 
-in_right_lid = 0.0
-in_left_lid = 0.0
-in_right_gaze_x = 0.0
-in_left_gaze_x = 0.0
-in_right_gaze_y = 0.0
-in_left_gaze_y = 0.0
+class OSCMessageHandler:
+    def __init__(self, client, config, lock):
+        self.client = client
+        self.config = config
+        self.lock = lock
+        
+        self.last_eye_value = None
+        self.last_change_time = time.time()
+        self.is_sleeping = False
+        self.msg_sent_count = 0
+        
+        self.in_right_lid = 0.0
+        self.in_left_lid = 0.0
+        self.in_right_gaze_x = 0.0
+        self.in_left_gaze_x = 0.0
+        self.in_right_gaze_y = 0.0
+        self.in_left_gaze_y = 0.0
 
-def default_handler(address, *args):
-    global last_eye_value, last_change_time, is_sleeping, msg_sent_count
-    global in_right_lid, in_left_lid, in_right_gaze_x, in_left_gaze_x, in_right_gaze_y, in_left_gaze_y
+    def get_status(self):
+        with self.lock:
+            count = self.msg_sent_count
+            self.msg_sent_count = 0
+            is_sleeping = self.is_sleeping
+        return count, is_sleeping
 
-    incoming_value = args[0] if len(args) > 0 else 0.0
-    current_time = time.time()
+    def handle(self, address, *args):
+        incoming_value = args[0] if len(args) > 0 else 0.0
+        current_time = time.time()
 
-    if "RightEyeLid" in address or "LeftEyeLid" in address:
-        with state_lock:
+        if "RightEyeLid" in address or "LeftEyeLid" in address:
+            self._handle_eyelid(address, incoming_value, current_time, args)
+        elif any(k in address for k in ["RightEyeX", "EyeRightX", "LeftEyeX", "EyeLeftX"]):
+            self._handle_gaze_x(address, incoming_value, args)
+        elif any(k in address for k in ["RightEyeY", "EyeRightY", "LeftEyeY", "EyeLeftY"]):
+            self._handle_gaze_y(address, incoming_value, args)
+        else:
+            self._handle_default(address, args)
+
+    def _handle_eyelid(self, address, incoming_value, current_time, args):
+        with self.lock:
             if "RightEyeLid" in address:
-                in_right_lid = incoming_value
-                if config["sleep_mode"]["enabled"]:
-                    if last_eye_value is None or abs(incoming_value - last_eye_value) >= config["sleep_mode"]["change_threshold"]:
-                        last_eye_value = incoming_value
-                        last_change_time = current_time
-                        is_sleeping = False
-                    else:
-                        if current_time - last_change_time >= config["sleep_mode"]["timeout_seconds"]:
-                            is_sleeping = True
-                else:
-                    last_eye_value = incoming_value
-                    is_sleeping = False
+                self.in_right_lid = incoming_value
+                self._update_sleep_state(incoming_value, current_time)
             else:
-                in_left_lid = incoming_value
+                self.in_left_lid = incoming_value
             
-            mix_cfg = config["mix"]["eyelid"]
-            out_right = in_right_lid * mix_cfg["right_out"]["right_in"] + in_left_lid * mix_cfg["right_out"]["left_in"]
-            out_left  = in_right_lid * mix_cfg["left_out"]["right_in"]  + in_left_lid * mix_cfg["left_out"]["left_in"]
+            mix_cfg = self.config["mix"]["eyelid"]
+            out_right = self.in_right_lid * mix_cfg["right_out"]["right_in"] + self.in_left_lid * mix_cfg["right_out"]["left_in"]
+            out_left  = self.in_right_lid * mix_cfg["left_out"]["right_in"]  + self.in_left_lid * mix_cfg["left_out"]["left_in"]
             
-            if config["sleep_mode"]["enabled"] and is_sleeping:
-                out_right = config["sleep_mode"]["closed_value"]
-                out_left = config["sleep_mode"]["closed_value"]
+            if self.config["sleep_mode"]["enabled"] and self.is_sleeping:
+                out_right = self.config["sleep_mode"]["closed_value"]
+                out_left = self.config["sleep_mode"]["closed_value"]
 
-        if "RightEyeLid" in address:
-            r_addr = address
-            l_addr = address.replace("RightEyeLid", "LeftEyeLid")
+        self._send_mixed_messages(address, "RightEyeLid", "LeftEyeLid", out_right, out_left, args)
+
+    def _update_sleep_state(self, incoming_value, current_time):
+        if self.config["sleep_mode"]["enabled"]:
+            if self.last_eye_value is None or abs(incoming_value - self.last_eye_value) >= self.config["sleep_mode"]["change_threshold"]:
+                self.last_eye_value = incoming_value
+                self.last_change_time = current_time
+                self.is_sleeping = False
+            else:
+                if current_time - self.last_change_time >= self.config["sleep_mode"]["timeout_seconds"]:
+                    self.is_sleeping = True
         else:
-            l_addr = address
-            r_addr = address.replace("LeftEyeLid", "RightEyeLid")
+            self.last_eye_value = incoming_value
+            self.is_sleeping = False
 
-        out_r = list(args)
-        if len(out_r) > 0: out_r[0] = out_right
-        else: out_r = [out_right]
-        
-        out_l = list(args)
-        if len(out_l) > 0: out_l[0] = out_left
-        else: out_l = [out_left]
-        
-        client.send_message(r_addr, out_r)
-        client.send_message(l_addr, out_l)
-        with state_lock:
-            msg_sent_count += 2
-
-    elif any(k in address for k in ["RightEyeX", "EyeRightX", "LeftEyeX", "EyeLeftX"]):
+    def _handle_gaze_x(self, address, incoming_value, args):
         is_right = "RightEyeX" in address or "EyeRightX" in address
-        with state_lock:
+        with self.lock:
             if is_right:
-                in_right_gaze_x = incoming_value
+                self.in_right_gaze_x = incoming_value
             else:
-                in_left_gaze_x = incoming_value
+                self.in_left_gaze_x = incoming_value
                 
-            mix_cfg = config["mix"]["gaze_x"]
-            out_right = in_right_gaze_x * mix_cfg["right_out"]["right_in"] + in_left_gaze_x * mix_cfg["right_out"]["left_in"]
-            out_left  = in_right_gaze_x * mix_cfg["left_out"]["right_in"]  + in_left_gaze_x * mix_cfg["left_out"]["left_in"]
+            mix_cfg = self.config["mix"]["gaze_x"]
+            out_right = self.in_right_gaze_x * mix_cfg["right_out"]["right_in"] + self.in_left_gaze_x * mix_cfg["right_out"]["left_in"]
+            out_left  = self.in_right_gaze_x * mix_cfg["left_out"]["right_in"]  + self.in_left_gaze_x * mix_cfg["left_out"]["left_in"]
 
-        if is_right:
-            r_addr = address
-            l_addr = address.replace("RightEyeX", "LeftEyeX") if "RightEyeX" in address else address.replace("EyeRightX", "EyeLeftX")
-        else:
-            l_addr = address
-            r_addr = address.replace("LeftEyeX", "RightEyeX") if "LeftEyeX" in address else address.replace("EyeLeftX", "EyeRightX")
+        self._send_gaze_messages(address, is_right, "EyeX", out_right, out_left, args)
 
-        out_r = list(args)
-        if len(out_r) > 0: out_r[0] = out_right
-        else: out_r = [out_right]
-        
-        out_l = list(args)
-        if len(out_l) > 0: out_l[0] = out_left
-        else: out_l = [out_left]
-
-        client.send_message(r_addr, out_r)
-        client.send_message(l_addr, out_l)
-        with state_lock:
-            msg_sent_count += 2
-
-    elif any(k in address for k in ["RightEyeY", "EyeRightY", "LeftEyeY", "EyeLeftY"]):
+    def _handle_gaze_y(self, address, incoming_value, args):
         is_right = "RightEyeY" in address or "EyeRightY" in address
-        with state_lock:
+        with self.lock:
             if is_right:
-                in_right_gaze_y = incoming_value
+                self.in_right_gaze_y = incoming_value
             else:
-                in_left_gaze_y = incoming_value
+                self.in_left_gaze_y = incoming_value
                 
-            mix_cfg = config["mix"]["gaze_y"]
-            out_right = in_right_gaze_y * mix_cfg["right_out"]["right_in"] + in_left_gaze_y * mix_cfg["right_out"]["left_in"]
-            out_left  = in_right_gaze_y * mix_cfg["left_out"]["right_in"]  + in_left_gaze_y * mix_cfg["left_out"]["left_in"]
+            mix_cfg = self.config["mix"]["gaze_y"]
+            out_right = self.in_right_gaze_y * mix_cfg["right_out"]["right_in"] + self.in_left_gaze_y * mix_cfg["right_out"]["left_in"]
+            out_left  = self.in_right_gaze_y * mix_cfg["left_out"]["right_in"]  + self.in_left_gaze_y * mix_cfg["left_out"]["left_in"]
 
-        if is_right:
-            r_addr = address
-            l_addr = address.replace("RightEyeY", "LeftEyeY") if "RightEyeY" in address else address.replace("EyeRightY", "EyeLeftY")
+        self._send_gaze_messages(address, is_right, "EyeY", out_right, out_left, args)
+
+    def _send_gaze_messages(self, address, is_right, axis_suffix, out_right, out_left, args):
+        if axis_suffix == "EyeX":
+            right_keys = ["RightEyeX", "EyeRightX"]
+            left_keys = ["LeftEyeX", "EyeLeftX"]
         else:
-            l_addr = address
-            r_addr = address.replace("LeftEyeY", "RightEyeY") if "LeftEyeY" in address else address.replace("EyeLeftY", "EyeRightY")
+            right_keys = ["RightEyeY", "EyeRightY"]
+            left_keys = ["LeftEyeY", "EyeLeftY"]
+            
+        r_addr = address
+        l_addr = address
+        
+        if is_right:
+            for r_key, l_key in zip(right_keys, left_keys):
+                if r_key in address:
+                    l_addr = address.replace(r_key, l_key)
+                    break
+        else:
+            for l_key, r_key in zip(left_keys, right_keys):
+                if l_key in address:
+                    r_addr = address.replace(l_key, r_key)
+                    break
+
+        self._send_mixed_messages(None, None, None, out_right, out_left, args, r_addr=r_addr, l_addr=l_addr)
+
+    def _send_mixed_messages(self, address, right_key, left_key, out_right, out_left, args, r_addr=None, l_addr=None):
+        if r_addr is None or l_addr is None:
+            if right_key in address:
+                r_addr = address
+                l_addr = address.replace(right_key, left_key)
+            else:
+                l_addr = address
+                r_addr = address.replace(left_key, right_key)
 
         out_r = list(args)
         if len(out_r) > 0: out_r[0] = out_right
@@ -189,20 +204,22 @@ def default_handler(address, *args):
         out_l = list(args)
         if len(out_l) > 0: out_l[0] = out_left
         else: out_l = [out_left]
+        
+        self.client.send_message(r_addr, out_r)
+        self.client.send_message(l_addr, out_l)
+        
+        with self.lock:
+            self.msg_sent_count += 2
 
-        client.send_message(r_addr, out_r)
-        client.send_message(l_addr, out_l)
-        with state_lock:
-            msg_sent_count += 2
-
-    else:
-        client.send_message(address, args)
-        with state_lock:
-            msg_sent_count += 1
+    def _handle_default(self, address, args):
+        self.client.send_message(address, args)
+        with self.lock:
+            self.msg_sent_count += 1
 
 class OSCProxyGUI(ctk.CTk):
-    def __init__(self):
+    def __init__(self, handler):
         super().__init__()
+        self.handler = handler
         self.title("OSC Proxy Configuration")
         self.geometry("600x650")
         
@@ -315,16 +332,50 @@ class OSCProxyGUI(ctk.CTk):
                 print(f"Error saving config: {e}")
 
     def update_status(self):
-        global msg_sent_count
-        with state_lock:
-            mps = msg_sent_count
-            msg_sent_count = 0
-            sleep_status = "ON" if is_sleeping else "OFF"
+        mps, is_sleeping = self.handler.get_status()
+        sleep_status = "ON" if is_sleeping else "OFF"
         self.status_label.configure(text=f"Messages / sec: {mps} | Sleep: {sleep_status}")
         self.after(1000, self.update_status)
 
+def resolve_port_conflict(port, disp):
+    try:
+        for conn in psutil.net_connections(kind='udp'):
+            if conn.laddr and conn.laddr.port == port:
+                pid = conn.pid
+                if not pid:
+                    continue
+                try:
+                    proc = psutil.Process(pid)
+                    cmdline = proc.cmdline()
+                    is_proxy = any("osc_proxy" in cmd.lower() for cmd in cmdline) if cmdline else False
+                    if "osc_proxy" in proc.name().lower():
+                        is_proxy = True
+                        
+                    if is_proxy:
+                        print(f"\n[エラー] ポート {port} は既に別の OSC Proxy (PID: {pid}) によって使用されています。")
+                        ans = input("以前のプロセスを終了して新しく起動しますか？ (y/n): ")
+                        if ans.lower() in ['y', 'yes']:
+                            proc.terminate()
+                            proc.wait(timeout=3)
+                            print("古いプロセスを終了しました。再起動します...\n")
+                            return osc_server.ThreadingOSCUDPServer((IP_ADDRESS, port), disp)
+                        else:
+                            print("起動を中止します。")
+                            sys.exit(1)
+                    else:
+                        print(f"\n[エラー] ポート {port} は別のプロセス (PID: {pid}, {proc.name()}) によって使用されています。")
+                        sys.exit(1)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+    except psutil.AccessDenied:
+        print(f"\n[エラー] ポート {port} が既に使用されています。プロセスの特定には管理者権限が必要です。")
+        sys.exit(1)
+        
+    print(f"\n[エラー] ポート {port} が既に使用されています（プロセスの特定または停止ができませんでした）。")
+    sys.exit(1)
+
 def monitor_steamvr(server):
-    time.sleep(10)
+    time.sleep(30)
     while True:
         is_running = False
         for proc in psutil.process_iter(['name']):
@@ -344,49 +395,14 @@ if __name__ == "__main__":
     ctk.set_default_color_theme("blue")
     
     disp = dispatcher.Dispatcher()
-    disp.set_default_handler(default_handler)
+    handler = OSCMessageHandler(client, config, state_lock)
+    disp.set_default_handler(handler.handle)
 
     try:
         server = osc_server.ThreadingOSCUDPServer((IP_ADDRESS, RECEIVE_PORT), disp)
     except OSError as e:
         if getattr(e, 'winerror', None) == 10048 or "10048" in str(e) or "Address already in use" in str(e):
-            resolved = False
-            try:
-                for conn in psutil.net_connections(kind='udp'):
-                    if conn.laddr and conn.laddr.port == RECEIVE_PORT:
-                        pid = conn.pid
-                        if pid:
-                            try:
-                                proc = psutil.Process(pid)
-                                cmdline = proc.cmdline()
-                                is_proxy = any("osc_proxy" in cmd.lower() for cmd in cmdline) if cmdline else False
-                                if "osc_proxy" in proc.name().lower():
-                                    is_proxy = True
-                                    
-                                if is_proxy:
-                                    print(f"\n[エラー] ポート {RECEIVE_PORT} は既に別の OSC Proxy (PID: {pid}) によって使用されています。")
-                                    ans = input("以前のプロセスを終了して新しく起動しますか？ (y/n): ")
-                                    if ans.lower() in ['y', 'yes']:
-                                        proc.terminate()
-                                        proc.wait(timeout=3)
-                                        print("古いプロセスを終了しました。再起動します...\n")
-                                        server = osc_server.ThreadingOSCUDPServer((IP_ADDRESS, RECEIVE_PORT), disp)
-                                        resolved = True
-                                    else:
-                                        print("起動を中止します。")
-                                        sys.exit(1)
-                                else:
-                                    print(f"\n[エラー] ポート {RECEIVE_PORT} は別のプロセス (PID: {pid}, {proc.name()}) によって使用されています。")
-                                    sys.exit(1)
-                            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                                pass
-            except psutil.AccessDenied:
-                print(f"\n[エラー] ポート {RECEIVE_PORT} が既に使用されています。プロセスの特定には管理者権限が必要です。")
-                sys.exit(1)
-            
-            if not resolved:
-                print(f"\n[エラー] ポート {RECEIVE_PORT} が既に使用されています（プロセスの特定または停止ができませんでした）。")
-                sys.exit(1)
+            server = resolve_port_conflict(RECEIVE_PORT, disp)
         else:
             raise
 
@@ -401,7 +417,7 @@ if __name__ == "__main__":
     print(f"[{time.strftime('%H:%M:%S')}] OSC Proxy started with GUI.")
     
     # メインスレッドでGUIを実行
-    app = OSCProxyGUI()
+    app = OSCProxyGUI(handler)
     app.mainloop()
     
     server.shutdown()
