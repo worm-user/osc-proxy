@@ -8,7 +8,7 @@ class OSCProxyGUI(ctk.CTk):
         self.handler = handler
         self.config = config
         self.title("OSC Proxy Configuration")
-        self.geometry("850x680")
+        self.geometry("850x720")
         self.resizable(False, False)
         
         # Banner
@@ -49,12 +49,13 @@ class OSCProxyGUI(ctk.CTk):
         self.create_sleep_section(self.right_col)
         self.create_steamvr_section(self.right_col)
         
-        # Status Label and Save Button
+        # Status Canvas and Save Button
         bottom_frame = ctk.CTkFrame(self.right_col, fg_color="transparent")
         bottom_frame.pack(fill="x", side="bottom", pady=10)
         
-        self.status_label = ctk.CTkLabel(bottom_frame, text="Messages / sec: 0", font=("Arial", 12))
-        self.status_label.pack(pady=5)
+        self.throughput_history = [0] * 20
+        self.graph_canvas = ctk.CTkCanvas(bottom_frame, height=75, bg="#2b2b2b", highlightthickness=0)
+        self.graph_canvas.pack(fill="x", pady=(0, 10))
         
         save_btn = ctk.CTkButton(bottom_frame, text="Save Config to File", font=("Arial", 16, "bold"), height=45, command=self.do_save)
         save_btn.pack(fill="x")
@@ -224,7 +225,7 @@ class OSCProxyGUI(ctk.CTk):
 
     def update_status(self):
         mps, is_sleeping = self.handler.get_status()
-        self.status_label.configure(text=f"Messages / sec: {mps}")
+        self.draw_throughput_graph(mps)
         
         if is_sleeping:
             self.banner_frame.configure(fg_color="#D32F2F") # Red
@@ -241,6 +242,44 @@ class OSCProxyGUI(ctk.CTk):
                 self.log_message("アクティブ状態（ACTIVE）に戻りました。")
                 
         self.after(500, self.update_status)
+
+    def draw_throughput_graph(self, mps):
+        self.throughput_history.append(mps)
+        self.throughput_history.pop(0)
+        
+        self.graph_canvas.delete("all")
+        
+        width = self.graph_canvas.winfo_width()
+        if width <= 1:
+            width = 380
+        height = 75
+        
+        # Grid lines (faint)
+        for ratio in [0.25, 0.5, 0.75]:
+            y = height * (1 - ratio)
+            self.graph_canvas.create_line(0, y, width, y, fill="#3e3e3e", dash=(2, 2))
+            
+        # Coordinates
+        max_val = max(100, max(self.throughput_history))
+        points = []
+        for i, val in enumerate(self.throughput_history):
+            x = i * (width / 19)
+            y = height - 5 - (val / max_val) * (height - 10)
+            points.append((x, y))
+            
+        flat_points = []
+        for p in points:
+            flat_points.extend(p)
+            
+        # Draw area under the curve
+        poly_points = [0, height] + flat_points + [width, height]
+        self.graph_canvas.create_polygon(*poly_points, fill="#123c45", outline="", smooth=True)
+        
+        # Draw spline line
+        self.graph_canvas.create_line(*flat_points, fill="#00B4D8", width=2, smooth=True)
+        
+        # Draw label overlay
+        self.graph_canvas.create_text(10, 5, text=f"Throughput: {mps} msg/s", fill="#e0e0e0", font=("Arial", 11, "bold"), anchor="nw")
 
     def create_steamvr_section(self, parent):
         section = ctk.CTkFrame(parent)
