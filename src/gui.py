@@ -8,7 +8,7 @@ class OSCProxyGUI(ctk.CTk):
         self.handler = handler
         self.config = config
         self.title("OSC Proxy Configuration")
-        self.geometry("850x720")
+        self.geometry("900x780")
         self.resizable(False, False)
         
         # Banner
@@ -92,7 +92,7 @@ class OSCProxyGUI(ctk.CTk):
                 row = ctk.CTkFrame(frame, fg_color="transparent")
                 row.pack(fill="x", padx=10, pady=2)
                 
-                ctk.CTkLabel(row, text=f"From {side_in.replace('_', ' ').title()}:", width=100, anchor="e").pack(side="left", padx=5)
+                ctk.CTkLabel(row, text=f"From {side_in.replace('_', ' ').title()}:", width=120, anchor="e").pack(side="left", padx=5)
                 
                 slider = ctk.CTkSlider(row, from_=0.0, to=1.0, command=lambda v, k=config_key, o=side_out, i=side_in: self.on_mix_change(v, k, o, i))
                 slider.set(self.config["mix"][config_key][side_out][side_in])
