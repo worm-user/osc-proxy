@@ -1,7 +1,27 @@
 import time
+from typing import Any, Optional, Tuple
+from threading import Lock
+from pythonosc.udp_client import SimpleUDPClient
 
 class OSCMessageHandler:
-    def __init__(self, client, config, lock):
+    client: SimpleUDPClient
+    config: dict[str, Any]
+    lock: Lock
+    
+    last_eye_value: Optional[float]
+    last_change_time: float
+    is_sleeping: bool
+    msg_sent_count: int
+    
+    in_right_lid: float
+    in_left_lid: float
+    
+    raw_right_gaze_x: float
+    raw_left_gaze_x: float
+    raw_right_gaze_y: float
+    raw_left_gaze_y: float
+
+    def __init__(self, client: SimpleUDPClient, config: dict[str, Any], lock: Lock) -> None:
         self.client = client
         self.config = config
         self.lock = lock
@@ -19,20 +39,20 @@ class OSCMessageHandler:
         self.raw_right_gaze_y = 0.0
         self.raw_left_gaze_y = 0.0
 
-    def get_status(self):
+    def get_status(self) -> Tuple[int, bool]:
         with self.lock:
             count = self.msg_sent_count
             self.msg_sent_count = 0
             is_sleeping = self.is_sleeping
         return count, is_sleeping
 
-    def get_raw_gaze(self):
+    def get_raw_gaze(self) -> Tuple[float, float, float, float]:
         with self.lock:
             return self.raw_right_gaze_x, self.raw_left_gaze_x, self.raw_right_gaze_y, self.raw_left_gaze_y
 
-    def handle(self, address, *args):
-        incoming_value = args[0] if len(args) > 0 else 0.0
-        current_time = time.time()
+    def handle(self, address: str, *args: Any) -> None:
+        incoming_value: float = args[0] if len(args) > 0 else 0.0
+        current_time: float = time.time()
 
         if "RightEyeLid" in address or "LeftEyeLid" in address:
             self._handle_eyelid(address, incoming_value, current_time, args)
@@ -43,7 +63,7 @@ class OSCMessageHandler:
         else:
             self._handle_default(address, args)
 
-    def _handle_eyelid(self, address, incoming_value, current_time, args):
+    def _handle_eyelid(self, address: str, incoming_value: float, current_time: float, args: Tuple[Any, ...]) -> None:
         with self.lock:
             if "RightEyeLid" in address:
                 self.in_right_lid = incoming_value
@@ -61,7 +81,7 @@ class OSCMessageHandler:
 
         self._send_mixed_messages(address, "RightEyeLid", "LeftEyeLid", out_right, out_left, args)
 
-    def _update_sleep_state(self, incoming_value, current_time):
+    def _update_sleep_state(self, incoming_value: float, current_time: float) -> None:
         if self.config["sleep_mode"]["enabled"]:
             if self.last_eye_value is None or abs(incoming_value - self.last_eye_value) >= self.config["sleep_mode"]["change_threshold"]:
                 self.last_eye_value = incoming_value
@@ -74,7 +94,7 @@ class OSCMessageHandler:
             self.last_eye_value = incoming_value
             self.is_sleeping = False
 
-    def _handle_gaze_x(self, address, incoming_value, args):
+    def _handle_gaze_x(self, address: str, incoming_value: float, args: Tuple[Any, ...]) -> None:
         is_right = "RightEyeX" in address or "EyeRightX" in address
         with self.lock:
             if is_right:
@@ -91,7 +111,7 @@ class OSCMessageHandler:
 
         self._send_gaze_messages(address, is_right, "EyeX", out_right, out_left, args)
 
-    def _handle_gaze_y(self, address, incoming_value, args):
+    def _handle_gaze_y(self, address: str, incoming_value: float, args: Tuple[Any, ...]) -> None:
         is_right = "RightEyeY" in address or "EyeRightY" in address
         with self.lock:
             if is_right:
@@ -108,7 +128,7 @@ class OSCMessageHandler:
 
         self._send_gaze_messages(address, is_right, "EyeY", out_right, out_left, args)
 
-    def _send_gaze_messages(self, address, is_right, axis_suffix, out_right, out_left, args):
+    def _send_gaze_messages(self, address: str, is_right: bool, axis_suffix: str, out_right: float, out_left: float, args: Tuple[Any, ...]) -> None:
         if axis_suffix == "EyeX":
             right_keys = ["RightEyeX", "EyeRightX"]
             left_keys = ["LeftEyeX", "EyeLeftX"]
@@ -132,14 +152,17 @@ class OSCMessageHandler:
 
         self._send_mixed_messages(None, None, None, out_right, out_left, args, r_addr=r_addr, l_addr=l_addr)
 
-    def _send_mixed_messages(self, address, right_key, left_key, out_right, out_left, args, r_addr=None, l_addr=None):
+    def _send_mixed_messages(self, address: Optional[str], right_key: Optional[str], left_key: Optional[str], out_right: float, out_left: float, args: Tuple[Any, ...], r_addr: Optional[str] = None, l_addr: Optional[str] = None) -> None:
         if r_addr is None or l_addr is None:
-            if right_key in address:
-                r_addr = address
-                l_addr = address.replace(right_key, left_key)
+            if address is not None and right_key is not None and left_key is not None:
+                if right_key in address:
+                    r_addr = address
+                    l_addr = address.replace(right_key, left_key)
+                else:
+                    l_addr = address
+                    r_addr = address.replace(left_key, right_key)
             else:
-                l_addr = address
-                r_addr = address.replace(left_key, right_key)
+                return
 
         out_r = list(args)
         if len(out_r) > 0: out_r[0] = out_right
@@ -155,7 +178,7 @@ class OSCMessageHandler:
         with self.lock:
             self.msg_sent_count += 2
 
-    def _handle_default(self, address, args):
+    def _handle_default(self, address: str, args: Tuple[Any, ...]) -> None:
         self.client.send_message(address, args)
         with self.lock:
             self.msg_sent_count += 1

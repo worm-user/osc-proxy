@@ -1,9 +1,10 @@
 import os
 import json
 import threading
+from typing import Any
 
-CONFIG_FILE = "config.json"
-DEFAULT_CONFIG = {
+CONFIG_FILE: str = "config.json"
+DEFAULT_CONFIG: dict[str, Any] = {
     "sleep_mode": {
         "enabled": True,
         "timeout_seconds": 300.0,
@@ -33,9 +34,9 @@ DEFAULT_CONFIG = {
 }
 
 # 状態管理用ロック (GUIとOSCハンドラ間で共有)
-state_lock = threading.Lock()
+state_lock: threading.Lock = threading.Lock()
 
-def load_config():
+def load_config() -> dict[str, Any]:
     if not os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -68,7 +69,7 @@ def load_config():
         print(f"Error reading config.json: {e}. Using default settings.")
         return DEFAULT_CONFIG
 
-def save_config(config):
+def save_config(config: dict[str, Any]) -> None:
     with state_lock:
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:

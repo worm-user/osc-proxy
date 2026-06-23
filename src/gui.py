@@ -1,9 +1,21 @@
+from __future__ import annotations
 import time
+from typing import Any, Optional
 import customtkinter as ctk
 from src.config_manager import state_lock, DEFAULT_CONFIG, save_config
+from src.osc_handler import OSCMessageHandler
 
 class DetailedSettingsWindow(ctk.CTkToplevel):
-    def __init__(self, parent, config):
+    parent: OSCProxyGUI
+    config: dict[str, Any]
+    sliders: dict[str, tuple[ctk.CTkSlider, ctk.CTkLabel]]
+    sleep_enabled: ctk.BooleanVar
+    timeout_entry: ctk.CTkEntry
+    threshold_entry: ctk.CTkEntry
+    closed_val_entry: ctk.CTkEntry
+    steamvr_enabled: ctk.BooleanVar
+
+    def __init__(self, parent: OSCProxyGUI, config: dict[str, Any]) -> None:
         super().__init__(parent)
         self.parent = parent
         self.config = config
@@ -27,15 +39,15 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         
         self.after(10, self.lift_window)
 
-    def lift_window(self):
+    def lift_window(self) -> None:
         self.lift()
         self.focus()
 
-    def do_save(self):
+    def do_save(self) -> None:
         save_config(self.config)
         self.parent.log_message("設定を config.json に保存しました。")
 
-    def create_mix_section(self, parent, title, config_key):
+    def create_mix_section(self, parent: ctk.CTkFrame, title: str, config_key: str) -> None:
         section = ctk.CTkFrame(parent)
         section.pack(fill="x", pady=(0, 10))
         
@@ -65,14 +77,14 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
                 
                 self.sliders[f"{config_key}_{side_out}_{side_in}"] = (slider, val_lbl)
 
-    def on_mix_change(self, value, config_key, side_out, side_in):
+    def on_mix_change(self, value: float | str, config_key: str, side_out: str, side_in: str) -> None:
         val = float(value)
         with state_lock:
             self.config["mix"][config_key][side_out][side_in] = val
         slider, val_lbl = self.sliders[f"{config_key}_{side_out}_{side_in}"]
         val_lbl.configure(text=f"{val:.2f}")
 
-    def reset_mix(self, config_key):
+    def reset_mix(self, config_key: str) -> None:
         default = DEFAULT_CONFIG["mix"][config_key]
         for side_out in ["right_out", "left_out"]:
             for side_in in ["right_in", "left_in"]:
@@ -84,7 +96,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
                 val_lbl.configure(text=f"{val:.2f}")
         self.parent.log_message(f"{config_key.capitalize()} Mix設定を初期値にリセットしました。")
 
-    def create_sleep_section(self, parent):
+    def create_sleep_section(self, parent: ctk.CTkFrame) -> None:
         section = ctk.CTkFrame(parent)
         section.pack(fill="x", pady=(0, 10))
         
@@ -121,7 +133,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         self.closed_val_entry.pack(side="left", fill="x", expand=True)
         self.closed_val_entry.bind("<KeyRelease>", self.on_sleep_change)
 
-    def on_sleep_change(self, event=None):
+    def on_sleep_change(self, event: Any = None) -> None:
         with state_lock:
             self.config["sleep_mode"]["enabled"] = self.sleep_enabled.get()
             try: self.config["sleep_mode"]["timeout_seconds"] = float(self.timeout_entry.get())
@@ -131,7 +143,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
             try: self.config["sleep_mode"]["closed_value"] = float(self.closed_val_entry.get())
             except: pass
 
-    def reset_sleep(self):
+    def reset_sleep(self) -> None:
         default = DEFAULT_CONFIG["sleep_mode"]
         with state_lock:
             self.config["sleep_mode"] = default.copy()
@@ -145,7 +157,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         self.closed_val_entry.insert(0, str(default["closed_value"]))
         self.parent.log_message("スリープモード設定を初期値にリセットしました。")
 
-    def create_steamvr_section(self, parent):
+    def create_steamvr_section(self, parent: ctk.CTkFrame) -> None:
         section = ctk.CTkFrame(parent)
         section.pack(fill="x", pady=(0, 10))
         
@@ -157,7 +169,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         cb = ctk.CTkCheckBox(section, text="SteamVR起動時に自動実行", variable=self.steamvr_enabled, command=self.on_steamvr_change)
         cb.pack(anchor="w", padx=20, pady=10)
 
-    def on_steamvr_change(self):
+    def on_steamvr_change(self) -> None:
         enabled = self.steamvr_enabled.get()
         with state_lock:
             self.config["steamvr"]["auto_launch"] = enabled
@@ -178,7 +190,20 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
 
 
 class OSCProxyGUI(ctk.CTk):
-    def __init__(self, handler, config):
+    handler: OSCMessageHandler
+    config: dict[str, Any]
+    settings_window: Optional[DetailedSettingsWindow]
+    banner_frame: ctk.CTkFrame
+    banner_label: ctk.CTkLabel
+    log_frame: ctk.CTkFrame
+    log_textbox: ctk.CTkTextbox
+    main_frame: ctk.CTkFrame
+    calib_btn: ctk.CTkButton
+    throughput_history: list[int]
+    graph_canvas: ctk.CTkCanvas
+    last_sleeping_state: bool
+
+    def __init__(self, handler: OSCMessageHandler, config: dict[str, Any]) -> None:
         super().__init__()
         self.handler = handler
         self.config = config
@@ -216,20 +241,20 @@ class OSCProxyGUI(ctk.CTk):
         self.last_sleeping_state = False
         self.update_status()
 
-    def log_message(self, msg):
+    def log_message(self, msg: str) -> None:
         self.log_textbox.configure(state="normal")
         self.log_textbox.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
         self.log_textbox.see("end")
         self.log_textbox.configure(state="disabled")
 
-    def open_detailed_settings(self):
+    def open_detailed_settings(self) -> None:
         if self.settings_window is None or not self.settings_window.winfo_exists():
             self.settings_window = DetailedSettingsWindow(self, self.config)
         else:
             self.settings_window.focus()
             self.settings_window.lift()
 
-    def create_calibration_section(self, parent):
+    def create_calibration_section(self, parent: ctk.CTkFrame) -> None:
         section = ctk.CTkFrame(parent)
         section.pack(fill="x", pady=(0, 10))
         
@@ -241,12 +266,12 @@ class OSCProxyGUI(ctk.CTk):
         self.calib_btn = ctk.CTkButton(section, text="Calibrate Center", font=("Arial", 14), height=40, command=self.start_calibration)
         self.calib_btn.pack(fill="x", padx=20, pady=10)
 
-    def start_calibration(self):
+    def start_calibration(self) -> None:
         self.calib_btn.configure(state="disabled")
         self.log_message("センターキャリブレーションを開始しました。3秒間正面を向いてください...")
         self.calib_countdown(3)
 
-    def calib_countdown(self, seconds):
+    def calib_countdown(self, seconds: int) -> None:
         if seconds > 0:
             self.calib_btn.configure(text=f"Look straight ahead... {seconds}")
             self.after(1000, self.calib_countdown, seconds - 1)
@@ -254,7 +279,7 @@ class OSCProxyGUI(ctk.CTk):
             self.calib_btn.configure(text="Capturing...")
             self.after(100, self.execute_calibration)
 
-    def execute_calibration(self):
+    def execute_calibration(self) -> None:
         rx, lx, ry, ly = self.handler.get_raw_gaze()
         with state_lock:
             self.config["calibration"]["right_gaze_x_offset"] = rx
@@ -264,16 +289,16 @@ class OSCProxyGUI(ctk.CTk):
         self.calib_btn.configure(text="Calibrate Center", state="normal")
         self.log_message(f"センターキャリブレーション完了: 右目オフセット({rx:.2f}, {ry:.2f}) 左目オフセット({lx:.2f}, {ly:.2f}) を設定しました。")
 
-    def reset_calibration(self):
+    def reset_calibration(self) -> None:
         with state_lock:
             self.config["calibration"] = DEFAULT_CONFIG["calibration"].copy()
         self.log_message("キャリブレーション設定を初期値にリセットしました。")
 
-    def create_buttons_section(self, parent):
+    def create_buttons_section(self, parent: ctk.CTkFrame) -> None:
         settings_btn = ctk.CTkButton(parent, text="詳細設定を開く", font=("Arial", 14, "bold"), height=40, command=self.open_detailed_settings)
         settings_btn.pack(fill="x", pady=(0, 10))
 
-    def create_graph_section(self, parent):
+    def create_graph_section(self, parent: ctk.CTkFrame) -> None:
         section = ctk.CTkFrame(parent)
         section.pack(fill="x", pady=(0, 10))
         
@@ -281,7 +306,7 @@ class OSCProxyGUI(ctk.CTk):
         self.graph_canvas = ctk.CTkCanvas(section, height=75, bg="#2b2b2b", highlightthickness=0)
         self.graph_canvas.pack(fill="x", padx=10, pady=10)
 
-    def update_status(self):
+    def update_status(self) -> None:
         mps, is_sleeping = self.handler.get_status()
         self.draw_throughput_graph(mps)
         
@@ -301,7 +326,7 @@ class OSCProxyGUI(ctk.CTk):
                 
         self.after(500, self.update_status)
 
-    def draw_throughput_graph(self, mps):
+    def draw_throughput_graph(self, mps: int) -> None:
         self.throughput_history.append(mps)
         self.throughput_history.pop(0)
         

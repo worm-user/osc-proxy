@@ -2,9 +2,11 @@ import time
 import os
 import sys
 import psutil
-from pythonosc import osc_server
+from typing import Any, Callable, Optional
+from pythonosc.dispatcher import Dispatcher
+from pythonosc.osc_server import ThreadingOSCUDPServer
 
-def resolve_port_conflict(port, disp, ip_address="127.0.0.1"):
+def resolve_port_conflict(port: int, disp: Dispatcher, ip_address: str = "127.0.0.1") -> ThreadingOSCUDPServer:
     try:
         for conn in psutil.net_connections(kind='udp'):
             if conn.laddr and conn.laddr.port == port:
@@ -25,7 +27,7 @@ def resolve_port_conflict(port, disp, ip_address="127.0.0.1"):
                             proc.terminate()
                             proc.wait(timeout=3)
                             print("古いプロセスを終了しました。再起動します...\n")
-                            return osc_server.ThreadingOSCUDPServer((ip_address, port), disp)
+                            return ThreadingOSCUDPServer((ip_address, port), disp)
                         else:
                             print("起動を中止します。")
                             sys.exit(1)
@@ -41,7 +43,7 @@ def resolve_port_conflict(port, disp, ip_address="127.0.0.1"):
     print(f"\n[エラー] ポート {port} が既に使用されています（プロセスの特定または停止ができませんでした）。")
     sys.exit(1)
 
-def is_steamvr_running():
+def is_steamvr_running() -> bool:
     for proc in psutil.process_iter(['name']):
         try:
             if proc.info['name'] == 'vrserver.exe':
@@ -50,7 +52,7 @@ def is_steamvr_running():
             pass
     return False
 
-def monitor_steamvr(server):
+def monitor_steamvr(server: ThreadingOSCUDPServer) -> None:
     time.sleep(30)
     while True:
         if not is_steamvr_running():
@@ -58,8 +60,8 @@ def monitor_steamvr(server):
             os._exit(0) # Also terminate the GUI if steamvr is closed
         time.sleep(5)
 
-def register_steamvr_manifest(config=None, log_callback=None):
-    def log(msg):
+def register_steamvr_manifest(config: Optional[dict[str, Any]] = None, log_callback: Optional[Callable[[str], None]] = None) -> bool:
+    def log(msg: str) -> None:
         if log_callback:
             log_callback(msg)
         else:
