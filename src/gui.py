@@ -8,7 +8,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         self.parent = parent
         self.config = config
         self.title("Detailed Settings")
-        self.geometry("480x700")
+        self.geometry("480x780")
         self.resizable(False, False)
         
         self.sliders = {}
@@ -19,12 +19,21 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         self.create_mix_section(main_frame, "Eyelid Mix", "eyelid")
         self.create_mix_section(main_frame, "Gaze Mix (X/Y Combined)", "gaze")
         self.create_sleep_section(main_frame)
+        self.create_steamvr_section(main_frame)
+        
+        # Save Button
+        save_btn = ctk.CTkButton(main_frame, text="設定をファイルに保存", font=("Arial", 15, "bold"), height=45, command=self.do_save)
+        save_btn.pack(fill="x", pady=(10, 0))
         
         self.after(10, self.lift_window)
 
     def lift_window(self):
         self.lift()
         self.focus()
+
+    def do_save(self):
+        save_config(self.config)
+        self.parent.log_message("設定を config.json に保存しました。")
 
     def create_mix_section(self, parent, title, config_key):
         section = ctk.CTkFrame(parent)
@@ -136,6 +145,37 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         self.closed_val_entry.insert(0, str(default["closed_value"]))
         self.parent.log_message("スリープモード設定を初期値にリセットしました。")
 
+    def create_steamvr_section(self, parent):
+        section = ctk.CTkFrame(parent)
+        section.pack(fill="x", pady=(0, 10))
+        
+        header = ctk.CTkFrame(section, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=5)
+        ctk.CTkLabel(header, text="SteamVR Settings", font=("Arial", 16, "bold")).pack(side="left")
+        
+        self.steamvr_enabled = ctk.BooleanVar(value=self.config["steamvr"]["auto_launch"])
+        cb = ctk.CTkCheckBox(section, text="SteamVR起動時に自動実行", variable=self.steamvr_enabled, command=self.on_steamvr_change)
+        cb.pack(anchor="w", padx=20, pady=10)
+
+    def on_steamvr_change(self):
+        enabled = self.steamvr_enabled.get()
+        with state_lock:
+            self.config["steamvr"]["auto_launch"] = enabled
+        
+        from src.utils import is_steamvr_running
+        if is_steamvr_running():
+            try:
+                import openvr
+                openvr.init(openvr.VRApplication_Utility)
+                apps = openvr.VRApplications()
+                if apps.isApplicationInstalled("custom.osc.eyeproxy"):
+                    apps.setApplicationAutoLaunch("custom.osc.eyeproxy", enabled)
+                    status_str = "有効化" if enabled else "無効化"
+                    self.parent.log_message(f"SteamVRの自動起動設定を{status_str}しました。")
+                openvr.shutdown()
+            except Exception as e:
+                self.parent.log_message(f"自動起動設定の変更中にエラー: {e}")
+
 
 class OSCProxyGUI(ctk.CTk):
     def __init__(self, handler, config):
@@ -143,7 +183,7 @@ class OSCProxyGUI(ctk.CTk):
         self.handler = handler
         self.config = config
         self.title("OSC Proxy Configuration")
-        self.geometry("450x600")
+        self.geometry("450x680")
         self.resizable(False, False)
         
         self.settings_window = None
@@ -161,7 +201,7 @@ class OSCProxyGUI(ctk.CTk):
         
         ctk.CTkLabel(self.log_frame, text="Event Log", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=(2, 2))
         
-        self.log_textbox = ctk.CTkTextbox(self.log_frame, height=100, font=("Consolas", 11))
+        self.log_textbox = ctk.CTkTextbox(self.log_frame, height=300, font=("Consolas", 11))
         self.log_textbox.pack(fill="x", padx=10, pady=(0, 10))
         self.log_textbox.configure(state="disabled")
         
@@ -170,16 +210,11 @@ class OSCProxyGUI(ctk.CTk):
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
         self.create_calibration_section(self.main_frame)
-        self.create_steamvr_section(self.main_frame)
         self.create_buttons_section(self.main_frame)
         self.create_graph_section(self.main_frame)
         
         self.last_sleeping_state = False
         self.update_status()
-
-    def do_save(self):
-        save_config(self.config)
-        self.log_message("設定を config.json に保存しました。")
 
     def log_message(self, msg):
         self.log_textbox.configure(state="normal")
@@ -234,46 +269,9 @@ class OSCProxyGUI(ctk.CTk):
             self.config["calibration"] = DEFAULT_CONFIG["calibration"].copy()
         self.log_message("キャリブレーション設定を初期値にリセットしました。")
 
-    def create_steamvr_section(self, parent):
-        section = ctk.CTkFrame(parent)
-        section.pack(fill="x", pady=(0, 10))
-        
-        header = ctk.CTkFrame(section, fg_color="transparent")
-        header.pack(fill="x", padx=10, pady=5)
-        ctk.CTkLabel(header, text="SteamVR Settings", font=("Arial", 16, "bold")).pack(side="left")
-        
-        self.steamvr_enabled = ctk.BooleanVar(value=self.config["steamvr"]["auto_launch"])
-        cb = ctk.CTkCheckBox(section, text="SteamVR起動時に自動実行", variable=self.steamvr_enabled, command=self.on_steamvr_change)
-        cb.pack(anchor="w", padx=20, pady=10)
-
-    def on_steamvr_change(self):
-        enabled = self.steamvr_enabled.get()
-        with state_lock:
-            self.config["steamvr"]["auto_launch"] = enabled
-        
-        from src.utils import is_steamvr_running
-        if is_steamvr_running():
-            try:
-                import openvr
-                openvr.init(openvr.VRApplication_Utility)
-                apps = openvr.VRApplications()
-                if apps.isApplicationInstalled("custom.osc.eyeproxy"):
-                    apps.setApplicationAutoLaunch("custom.osc.eyeproxy", enabled)
-                    status_str = "有効化" if enabled else "無効化"
-                    self.log_message(f"SteamVRの自動起動設定を{status_str}しました。")
-                openvr.shutdown()
-            except Exception as e:
-                self.log_message(f"自動起動設定の変更中にエラー: {e}")
-
     def create_buttons_section(self, parent):
-        btn_row = ctk.CTkFrame(parent, fg_color="transparent")
-        btn_row.pack(fill="x", pady=(0, 10))
-        
-        settings_btn = ctk.CTkButton(btn_row, text="詳細設定を開く", font=("Arial", 14, "bold"), height=40, command=self.open_detailed_settings)
-        settings_btn.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        
-        save_btn = ctk.CTkButton(btn_row, text="設定を保存", font=("Arial", 14, "bold"), height=40, command=self.do_save)
-        save_btn.pack(side="right", fill="x", expand=True, padx=(5, 0))
+        settings_btn = ctk.CTkButton(parent, text="詳細設定を開く", font=("Arial", 14, "bold"), height=40, command=self.open_detailed_settings)
+        settings_btn.pack(fill="x", pady=(0, 10))
 
     def create_graph_section(self, parent):
         section = ctk.CTkFrame(parent)
