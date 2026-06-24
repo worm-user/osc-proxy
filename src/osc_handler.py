@@ -21,6 +21,9 @@ class OSCMessageHandler:
     raw_right_gaze_y: float
     raw_left_gaze_y: float
 
+    last_right_lid_address: str
+    last_left_lid_address: str
+
     def __init__(self, client: SimpleUDPClient, config: dict[str, Any], lock: Lock) -> None:
         self.client = client
         self.config = config
@@ -39,8 +42,23 @@ class OSCMessageHandler:
         self.raw_right_gaze_y = 0.0
         self.raw_left_gaze_y = 0.0
 
+        self.last_right_lid_address = "/avatar/parameters/RightEyeLid"
+        self.last_left_lid_address = "/avatar/parameters/LeftEyeLid"
+
     def get_status(self) -> Tuple[int, bool]:
+        current_time = time.time()
         with self.lock:
+            if self.config["sleep_mode"]["enabled"]:
+                if not self.is_sleeping:
+                    if current_time - self.last_change_time >= self.config["sleep_mode"]["timeout_seconds"]:
+                        self.is_sleeping = True
+                        closed_val = self.config["sleep_mode"]["closed_value"]
+                        self.client.send_message(self.last_right_lid_address, [closed_val])
+                        self.client.send_message(self.last_left_lid_address, [closed_val])
+            else:
+                if self.is_sleeping:
+                    self.is_sleeping = False
+            
             count = self.msg_sent_count
             self.msg_sent_count = 0
             is_sleeping = self.is_sleeping
@@ -66,9 +84,11 @@ class OSCMessageHandler:
     def _handle_eyelid(self, address: str, incoming_value: float, current_time: float, args: Tuple[Any, ...]) -> None:
         with self.lock:
             if "RightEyeLid" in address:
+                self.last_right_lid_address = address
                 self.in_right_lid = incoming_value
                 self._update_sleep_state(incoming_value, current_time)
             else:
+                self.last_left_lid_address = address
                 self.in_left_lid = incoming_value
             
             mix_cfg = self.config["mix"]["eyelid"]

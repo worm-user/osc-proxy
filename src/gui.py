@@ -1,6 +1,6 @@
 from __future__ import annotations
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Union
 import customtkinter as ctk
 from src.config_manager import state_lock, DEFAULT_CONFIG, save_config
 from src.osc_handler import OSCMessageHandler
@@ -20,22 +20,23 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         self.parent = parent
         self.config = config
         self.title("Detailed Settings")
-        self.geometry("480x780")
+        self.geometry("500x650")
         self.resizable(False, False)
         
         self.sliders = {}
         
-        main_frame = ctk.CTkFrame(self, fg_color="transparent")
-        main_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        # Scrollable area for setting groups
+        main_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=15, pady=(15, 5))
         
         self.create_mix_section(main_frame, "Eyelid Mix", "eyelid")
         self.create_mix_section(main_frame, "Gaze Mix (X/Y Combined)", "gaze")
         self.create_sleep_section(main_frame)
         self.create_steamvr_section(main_frame)
         
-        # Save Button
-        save_btn = ctk.CTkButton(main_frame, text="設定をファイルに保存", font=("Arial", 15, "bold"), height=45, command=self.do_save)
-        save_btn.pack(fill="x", pady=(10, 0))
+        # Save Button fixed at the bottom (outside scrollable frame)
+        save_btn = ctk.CTkButton(self, text="設定をファイルに保存", font=("Arial", 15, "bold"), height=45, command=self.do_save)
+        save_btn.pack(fill="x", padx=15, pady=(5, 15))
         
         self.after(10, self.lift_window)
 
@@ -47,7 +48,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         save_config(self.config)
         self.parent.log_message("設定を config.json に保存しました。")
 
-    def create_mix_section(self, parent: ctk.CTkFrame, title: str, config_key: str) -> None:
+    def create_mix_section(self, parent: Union[ctk.CTkFrame, ctk.CTkScrollableFrame], title: str, config_key: str) -> None:
         section = ctk.CTkFrame(parent)
         section.pack(fill="x", pady=(0, 10))
         
@@ -96,7 +97,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
                 val_lbl.configure(text=f"{val:.2f}")
         self.parent.log_message(f"{config_key.capitalize()} Mix設定を初期値にリセットしました。")
 
-    def create_sleep_section(self, parent: ctk.CTkFrame) -> None:
+    def create_sleep_section(self, parent: Union[ctk.CTkFrame, ctk.CTkScrollableFrame]) -> None:
         section = ctk.CTkFrame(parent)
         section.pack(fill="x", pady=(0, 10))
         
@@ -157,7 +158,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         self.closed_val_entry.insert(0, str(default["closed_value"]))
         self.parent.log_message("スリープモード設定を初期値にリセットしました。")
 
-    def create_steamvr_section(self, parent: ctk.CTkFrame) -> None:
+    def create_steamvr_section(self, parent: Union[ctk.CTkFrame, ctk.CTkScrollableFrame]) -> None:
         section = ctk.CTkFrame(parent)
         section.pack(fill="x", pady=(0, 10))
         
