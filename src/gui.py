@@ -269,8 +269,9 @@ class OSCProxyGUI(ctk.CTk):
 
     def start_calibration(self) -> None:
         self.calib_btn.configure(state="disabled")
-        self.log_message("センターキャリブレーションを開始しました。3秒間正面を向いてください...")
-        self.calib_countdown(3)
+        countdown = self.config.get("calibration", {}).get("countdown_seconds", 5)
+        self.log_message(f"センターキャリブレーションを開始しました。{countdown}秒間正面を向いてください...")
+        self.calib_countdown(countdown)
 
     def calib_countdown(self, seconds: int) -> None:
         if seconds > 0:

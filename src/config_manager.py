@@ -25,7 +25,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "right_gaze_x_offset": 0.0,
         "left_gaze_x_offset": 0.0,
         "right_gaze_y_offset": 0.0,
-        "left_gaze_y_offset": 0.0
+        "left_gaze_y_offset": 0.0,
+        "countdown_seconds": 5
     },
     "steamvr": {
         "auto_launch": True,
