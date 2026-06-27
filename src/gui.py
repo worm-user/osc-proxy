@@ -5,52 +5,261 @@ import customtkinter as ctk
 from src.config_manager import state_lock, DEFAULT_CONFIG, save_config
 from src.osc_handler import OSCMessageHandler
 
-class DetailedSettingsWindow(ctk.CTkToplevel):
-    parent: OSCProxyGUI
+class OSCProxyGUI(ctk.CTk):
+    handler: OSCMessageHandler
     config: dict[str, Any]
+    last_sleeping_state: bool
     sliders: dict[str, tuple[ctk.CTkSlider, ctk.CTkLabel]]
-    sleep_enabled: ctk.BooleanVar
-    timeout_entry: ctk.CTkEntry
-    threshold_entry: ctk.CTkEntry
-    closed_val_entry: ctk.CTkEntry
-    steamvr_enabled: ctk.BooleanVar
 
-    def __init__(self, parent: OSCProxyGUI, config: dict[str, Any]) -> None:
-        super().__init__(parent)
-        self.parent = parent
+    def __init__(self, handler: OSCMessageHandler, config: dict[str, Any]) -> None:
+        super().__init__()
+        self.handler = handler
         self.config = config
-        self.title("Detailed Settings")
-        self.geometry("500x650")
+        self.title("OSC Proxy Configuration")
+        self.geometry("800x550")
         self.resizable(False, False)
-        
+
+        # set grid layout 1x2
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+
+        # --- Sidebar ---
+        self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
+        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(6, weight=1) # Spacer
+
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="OSC Proxy", font=ctk.CTkFont(size=24, weight="bold"))
+        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
+
+        self.status_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="#388E3C", height=35)
+        self.status_frame.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="ew")
+        self.status_frame.pack_propagate(False)
+        self.status_label = ctk.CTkLabel(self.status_frame, text="STATUS: ACTIVE", font=("Arial", 14, "bold"), text_color="white")
+        self.status_label.pack(expand=True)
+
+        self.btn_dashboard = ctk.CTkButton(self.sidebar_frame, text="Dashboard", command=self.show_dashboard, fg_color="transparent", text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"), anchor="w")
+        self.btn_dashboard.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
+
+        self.btn_routing = ctk.CTkButton(self.sidebar_frame, text="Routing & Mix", command=self.show_routing, fg_color="transparent", text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"), anchor="w")
+        self.btn_routing.grid(row=3, column=0, padx=20, pady=5, sticky="ew")
+
+        self.btn_advanced = ctk.CTkButton(self.sidebar_frame, text="Advanced", command=self.show_advanced, fg_color="transparent", text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"), anchor="w")
+        self.btn_advanced.grid(row=4, column=0, padx=20, pady=5, sticky="ew")
+
+        self.btn_logs = ctk.CTkButton(self.sidebar_frame, text="Event Logs", command=self.show_logs, fg_color="transparent", text_color=("gray10", "gray90"), hover_color=("gray70", "gray30"), anchor="w")
+        self.btn_logs.grid(row=5, column=0, padx=20, pady=5, sticky="ew")
+
+        self.btn_save = ctk.CTkButton(self.sidebar_frame, text="Save Config", command=self.do_save, fg_color="#1f538d", font=("Arial", 14, "bold"), height=40)
+        self.btn_save.grid(row=7, column=0, padx=20, pady=20, sticky="ew")
+
+        # --- Main Frames ---
+        self.dashboard_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+        self.routing_frame = ctk.CTkScrollableFrame(self, corner_radius=0, fg_color="transparent")
+        self.advanced_frame = ctk.CTkScrollableFrame(self, corner_radius=0, fg_color="transparent")
+        self.logs_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
+
         self.sliders = {}
         
-        # Scrollable area for setting groups
-        main_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        main_frame.pack(fill="both", expand=True, padx=15, pady=(15, 5))
-        
-        self.create_mix_section(main_frame, "Eyelid Mix", "eyelid")
-        self.create_mix_section(main_frame, "Gaze Mix (X/Y Combined)", "gaze")
-        self.create_sleep_section(main_frame)
-        self.create_steamvr_section(main_frame)
-        
-        # Save Button fixed at the bottom (outside scrollable frame)
-        save_btn = ctk.CTkButton(self, text="設定をファイルに保存", font=("Arial", 15, "bold"), height=45, command=self.do_save)
-        save_btn.pack(fill="x", padx=15, pady=(5, 15))
-        
-        self.after(10, self.lift_window)
+        self.setup_dashboard()
+        self.setup_routing()
+        self.setup_advanced()
+        self.setup_logs()
 
-    def lift_window(self) -> None:
-        self.lift()
-        self.focus()
+        self.last_sleeping_state = False
+        self.show_dashboard()
+        self.update_status()
 
+    # View Setup Methods
+    def setup_dashboard(self) -> None:
+        self.dashboard_frame.grid_rowconfigure(0, weight=1)
+        self.dashboard_frame.grid_rowconfigure(1, weight=1)
+        self.dashboard_frame.grid_columnconfigure(0, weight=1)
+        self.dashboard_frame.grid_columnconfigure(1, weight=1)
+
+        # Graph section
+        graph_card = ctk.CTkFrame(self.dashboard_frame)
+        graph_card.grid(row=0, column=0, columnspan=2, padx=20, pady=(20, 10), sticky="nsew")
+        ctk.CTkLabel(graph_card, text="Throughput", font=("Arial", 16, "bold")).pack(anchor="w", padx=15, pady=(10, 0))
+        
+        self.throughput_history = [0] * 35
+        self.graph_canvas = ctk.CTkCanvas(graph_card, height=140, bg="#2b2b2b", highlightthickness=0)
+        self.graph_canvas.pack(fill="both", expand=True, padx=15, pady=10)
+
+        # Forwarding Toggles
+        fwd_card = ctk.CTkFrame(self.dashboard_frame)
+        fwd_card.grid(row=1, column=0, padx=(20, 10), pady=(10, 20), sticky="nsew")
+        ctk.CTkLabel(fwd_card, text="Forwarding", font=("Arial", 16, "bold")).pack(anchor="w", padx=15, pady=(10, 15))
+        
+        self.fwd_mouth = ctk.BooleanVar(value=self.config["forwarding"]["enable_mouth"])
+        self.fwd_right = ctk.BooleanVar(value=self.config["forwarding"]["enable_right_eye"])
+        self.fwd_left = ctk.BooleanVar(value=self.config["forwarding"]["enable_left_eye"])
+
+        ctk.CTkSwitch(fwd_card, text="Mouth Parameters", variable=self.fwd_mouth, command=self.on_forwarding_change).pack(anchor="w", padx=20, pady=10)
+        ctk.CTkSwitch(fwd_card, text="Right Eye Parameters", variable=self.fwd_right, command=self.on_forwarding_change).pack(anchor="w", padx=20, pady=10)
+        ctk.CTkSwitch(fwd_card, text="Left Eye Parameters", variable=self.fwd_left, command=self.on_forwarding_change).pack(anchor="w", padx=20, pady=10)
+
+        # Calibration
+        calib_card = ctk.CTkFrame(self.dashboard_frame)
+        calib_card.grid(row=1, column=1, padx=(10, 20), pady=(10, 20), sticky="nsew")
+        ctk.CTkLabel(calib_card, text="Calibration", font=("Arial", 16, "bold")).pack(anchor="w", padx=15, pady=(10, 15))
+        
+        self.calib_btn = ctk.CTkButton(calib_card, text="Calibrate Center", font=("Arial", 14), height=40, command=self.start_calibration)
+        self.calib_btn.pack(fill="x", padx=20, pady=20)
+        
+        ctk.CTkButton(calib_card, text="Reset Calibration", width=120, height=30, fg_color="transparent", border_width=1, text_color=("gray10", "#DCE4EE"), command=self.reset_calibration).pack(pady=10)
+
+    def setup_routing(self) -> None:
+        self.create_mix_section(self.routing_frame, "Eyelid Mix", "eyelid")
+        self.create_mix_section(self.routing_frame, "Gaze Mix (X/Y Combined)", "gaze")
+
+    def setup_advanced(self) -> None:
+        self.create_sleep_section(self.advanced_frame)
+        self.create_steamvr_section(self.advanced_frame)
+
+    def setup_logs(self) -> None:
+        ctk.CTkLabel(self.logs_frame, text="Event Logs", font=("Arial", 16, "bold")).pack(anchor="w", padx=20, pady=(20, 10))
+        self.log_textbox = ctk.CTkTextbox(self.logs_frame, font=("Consolas", 12))
+        self.log_textbox.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        self.log_textbox.configure(state="disabled")
+
+    # Layout Swapping
+    def select_frame(self, name: str) -> None:
+        self.btn_dashboard.configure(fg_color=("gray75", "gray25") if name == "dashboard" else "transparent")
+        self.btn_routing.configure(fg_color=("gray75", "gray25") if name == "routing" else "transparent")
+        self.btn_advanced.configure(fg_color=("gray75", "gray25") if name == "advanced" else "transparent")
+        self.btn_logs.configure(fg_color=("gray75", "gray25") if name == "logs" else "transparent")
+
+        self.dashboard_frame.grid_forget()
+        self.routing_frame.grid_forget()
+        self.advanced_frame.grid_forget()
+        self.logs_frame.grid_forget()
+
+        if name == "dashboard":
+            self.dashboard_frame.grid(row=0, column=1, sticky="nsew")
+        elif name == "routing":
+            self.routing_frame.grid(row=0, column=1, sticky="nsew")
+        elif name == "advanced":
+            self.advanced_frame.grid(row=0, column=1, sticky="nsew")
+        elif name == "logs":
+            self.logs_frame.grid(row=0, column=1, sticky="nsew")
+
+    def show_dashboard(self) -> None: self.select_frame("dashboard")
+    def show_routing(self) -> None: self.select_frame("routing")
+    def show_advanced(self) -> None: self.select_frame("advanced")
+    def show_logs(self) -> None: self.select_frame("logs")
+
+    # Logging and Data Updates
     def do_save(self) -> None:
         save_config(self.config)
-        self.parent.log_message("設定を config.json に保存しました。")
+        self.log_message("設定を config.json に保存しました。")
 
-    def create_mix_section(self, parent: Union[ctk.CTkFrame, ctk.CTkScrollableFrame], title: str, config_key: str) -> None:
+    def log_message(self, msg: str) -> None:
+        self.log_textbox.configure(state="normal")
+        self.log_textbox.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        self.log_textbox.see("end")
+        self.log_textbox.configure(state="disabled")
+
+    def on_forwarding_change(self) -> None:
+        with state_lock:
+            self.config["forwarding"]["enable_mouth"] = self.fwd_mouth.get()
+            self.config["forwarding"]["enable_right_eye"] = self.fwd_right.get()
+            self.config["forwarding"]["enable_left_eye"] = self.fwd_left.get()
+
+    def update_status(self) -> None:
+        mps, is_sleeping = self.handler.get_status()
+        self.draw_throughput_graph(mps)
+        
+        if is_sleeping:
+            self.status_frame.configure(fg_color="#D32F2F") # Red
+            self.status_label.configure(text="STATUS: SLEEPING")
+        else:
+            self.status_frame.configure(fg_color="#388E3C") # Green
+            self.status_label.configure(text="STATUS: ACTIVE")
+            
+        if is_sleeping != self.last_sleeping_state:
+            self.last_sleeping_state = is_sleeping
+            if is_sleeping:
+                self.log_message("スリープ状態（SLEEPING）になりました。目を閉じた状態（Closed Value）に固定します。")
+            else:
+                self.log_message("アクティブ状態（ACTIVE）に戻りました。")
+                
+        self.after(500, self.update_status)
+
+    def draw_throughput_graph(self, mps: int) -> None:
+        self.throughput_history.append(mps)
+        self.throughput_history.pop(0)
+        
+        self.graph_canvas.delete("all")
+        
+        width = self.graph_canvas.winfo_width()
+        if width <= 1:
+            width = 560
+        height = self.graph_canvas.winfo_height()
+        if height <= 1:
+            height = 140
+            
+        # Grid lines
+        for ratio in [0.25, 0.5, 0.75]:
+            y = height * (1 - ratio)
+            self.graph_canvas.create_line(0, y, width, y, fill="#3e3e3e", dash=(2, 2))
+            
+        # Coordinates
+        max_val = max(100, max(self.throughput_history))
+        points = []
+        n_points = len(self.throughput_history)
+        for i, val in enumerate(self.throughput_history):
+            x = i * (width / max(1, n_points - 1))
+            y = height - 5 - (val / max_val) * (height - 10)
+            points.append((x, y))
+            
+        flat_points = []
+        for p in points:
+            flat_points.extend(p)
+            
+        # Draw area under the curve
+        poly_points = [0, height] + flat_points + [width, height]
+        self.graph_canvas.create_polygon(*poly_points, fill="#123c45", outline="", smooth=True)
+        
+        # Draw spline line
+        self.graph_canvas.create_line(*flat_points, fill="#00B4D8", width=2, smooth=True)
+        
+        # Draw label overlay
+        self.graph_canvas.create_text(10, 5, text=f"Throughput: {mps} msg/s", fill="#e0e0e0", font=("Arial", 11, "bold"), anchor="nw")
+
+    # Calibration Methods
+    def start_calibration(self) -> None:
+        self.calib_btn.configure(state="disabled")
+        countdown = self.config.get("calibration", {}).get("countdown_seconds", 5)
+        self.log_message(f"センターキャリブレーションを開始しました。{countdown}秒間正面を向いてください...")
+        self.calib_countdown(countdown)
+
+    def calib_countdown(self, seconds: int) -> None:
+        if seconds > 0:
+            self.calib_btn.configure(text=f"Look straight ahead... {seconds}")
+            self.after(1000, self.calib_countdown, seconds - 1)
+        else:
+            self.calib_btn.configure(text="Capturing...")
+            self.after(100, self.execute_calibration)
+
+    def execute_calibration(self) -> None:
+        rx, lx, ry, ly = self.handler.get_raw_gaze()
+        with state_lock:
+            self.config["calibration"]["right_gaze_x_offset"] = rx
+            self.config["calibration"]["left_gaze_x_offset"] = lx
+            self.config["calibration"]["right_gaze_y_offset"] = ry
+            self.config["calibration"]["left_gaze_y_offset"] = ly
+        self.calib_btn.configure(text="Calibrate Center", state="normal")
+        self.log_message(f"センターキャリブレーション完了: 右目({rx:.2f}, {ry:.2f}) 左目({lx:.2f}, {ly:.2f})")
+
+    def reset_calibration(self) -> None:
+        with state_lock:
+            self.config["calibration"] = DEFAULT_CONFIG["calibration"].copy()
+        self.log_message("キャリブレーション設定を初期値にリセットしました。")
+
+    # Mix Sections
+    def create_mix_section(self, parent: ctk.CTkFrame, title: str, config_key: str) -> None:
         section = ctk.CTkFrame(parent)
-        section.pack(fill="x", pady=(0, 10))
+        section.pack(fill="x", padx=20, pady=(20, 0))
         
         header = ctk.CTkFrame(section, fg_color="transparent")
         header.pack(fill="x", padx=10, pady=5)
@@ -59,7 +268,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         
         for side_out in ["right_out", "left_out"]:
             frame = ctk.CTkFrame(section, fg_color="gray25")
-            frame.pack(fill="x", padx=10, pady=5)
+            frame.pack(fill="x", padx=10, pady=(5, 10))
             
             ctk.CTkLabel(frame, text=f"Output: {side_out.replace('_', ' ').title()}", font=("Arial", 13, "bold")).pack(anchor="w", padx=10, pady=2)
             
@@ -95,11 +304,12 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
                 slider, val_lbl = self.sliders[f"{config_key}_{side_out}_{side_in}"]
                 slider.set(val)
                 val_lbl.configure(text=f"{val:.2f}")
-        self.parent.log_message(f"{config_key.capitalize()} Mix設定を初期値にリセットしました。")
+        self.log_message(f"{config_key.capitalize()} Mix設定を初期値にリセットしました。")
 
-    def create_sleep_section(self, parent: Union[ctk.CTkFrame, ctk.CTkScrollableFrame]) -> None:
+    # Advanced Settings Sections
+    def create_sleep_section(self, parent: ctk.CTkFrame) -> None:
         section = ctk.CTkFrame(parent)
-        section.pack(fill="x", pady=(0, 10))
+        section.pack(fill="x", padx=20, pady=(20, 0))
         
         header = ctk.CTkFrame(section, fg_color="transparent")
         header.pack(fill="x", padx=10, pady=5)
@@ -107,11 +317,11 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         ctk.CTkButton(header, text="Reset", width=60, height=24, command=self.reset_sleep).pack(side="right")
         
         self.sleep_enabled = ctk.BooleanVar(value=self.config["sleep_mode"]["enabled"])
-        cb = ctk.CTkCheckBox(section, text="Enable Sleep Mode", variable=self.sleep_enabled, command=self.on_sleep_change)
+        cb = ctk.CTkSwitch(section, text="Enable Sleep Mode", variable=self.sleep_enabled, command=self.on_sleep_change)
         cb.pack(anchor="w", padx=20, pady=10)
         
         self.sleep_mouth = ctk.BooleanVar(value=self.config["sleep_mode"]["enable_mouth"])
-        cb_mouth = ctk.CTkCheckBox(section, text="Forward Mouth Data (1 msg/s)", variable=self.sleep_mouth, command=self.on_sleep_change)
+        cb_mouth = ctk.CTkSwitch(section, text="Forward Mouth Data (1 msg/s)", variable=self.sleep_mouth, command=self.on_sleep_change)
         cb_mouth.pack(anchor="w", padx=20, pady=(0, 10))
         
         row1 = ctk.CTkFrame(section, fg_color="transparent")
@@ -162,18 +372,18 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         self.threshold_entry.insert(0, str(default["change_threshold"]))
         self.closed_val_entry.delete(0, 'end')
         self.closed_val_entry.insert(0, str(default["closed_value"]))
-        self.parent.log_message("スリープモード設定を初期値にリセットしました。")
+        self.log_message("スリープモード設定を初期値にリセットしました。")
 
-    def create_steamvr_section(self, parent: Union[ctk.CTkFrame, ctk.CTkScrollableFrame]) -> None:
+    def create_steamvr_section(self, parent: ctk.CTkFrame) -> None:
         section = ctk.CTkFrame(parent)
-        section.pack(fill="x", pady=(0, 10))
+        section.pack(fill="x", padx=20, pady=(20, 20))
         
         header = ctk.CTkFrame(section, fg_color="transparent")
         header.pack(fill="x", padx=10, pady=5)
         ctk.CTkLabel(header, text="SteamVR Settings", font=("Arial", 16, "bold")).pack(side="left")
         
         self.steamvr_enabled = ctk.BooleanVar(value=self.config["steamvr"]["auto_launch"])
-        cb = ctk.CTkCheckBox(section, text="SteamVR起動時に自動実行", variable=self.steamvr_enabled, command=self.on_steamvr_change)
+        cb = ctk.CTkSwitch(section, text="SteamVR起動時に自動実行", variable=self.steamvr_enabled, command=self.on_steamvr_change)
         cb.pack(anchor="w", padx=20, pady=10)
 
     def on_steamvr_change(self) -> None:
@@ -190,215 +400,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
                 if apps.isApplicationInstalled("custom.osc.eyeproxy"):
                     apps.setApplicationAutoLaunch("custom.osc.eyeproxy", enabled)
                     status_str = "有効化" if enabled else "無効化"
-                    self.parent.log_message(f"SteamVRの自動起動設定を{status_str}しました。")
+                    self.log_message(f"SteamVRの自動起動設定を{status_str}しました。")
                 openvr.shutdown()
             except Exception as e:
-                self.parent.log_message(f"自動起動設定の変更中にエラー: {e}")
-
-
-class OSCProxyGUI(ctk.CTk):
-    handler: OSCMessageHandler
-    config: dict[str, Any]
-    settings_window: Optional[DetailedSettingsWindow]
-    banner_frame: ctk.CTkFrame
-    banner_label: ctk.CTkLabel
-    log_frame: ctk.CTkFrame
-    log_textbox: ctk.CTkTextbox
-    main_frame: ctk.CTkFrame
-    calib_btn: ctk.CTkButton
-    throughput_history: list[int]
-    graph_canvas: ctk.CTkCanvas
-    last_sleeping_state: bool
-
-    def __init__(self, handler: OSCMessageHandler, config: dict[str, Any]) -> None:
-        super().__init__()
-        self.handler = handler
-        self.config = config
-        self.title("OSC Proxy Configuration")
-        self.geometry("450x780")
-        self.resizable(False, False)
-        
-        self.settings_window = None
-        
-        # Banner (top)
-        self.banner_frame = ctk.CTkFrame(self, fg_color="#388E3C", height=45)
-        self.banner_frame.pack(fill="x", padx=10, pady=(10, 5))
-        self.banner_frame.pack_propagate(False)
-        self.banner_label = ctk.CTkLabel(self.banner_frame, text="STATUS: ACTIVE", font=("Arial", 20, "bold"), text_color="white")
-        self.banner_label.pack(expand=True)
-        
-        # Event Log Frame (bottom)
-        self.log_frame = ctk.CTkFrame(self)
-        self.log_frame.pack(fill="x", side="bottom", padx=10, pady=(5, 10))
-        
-        ctk.CTkLabel(self.log_frame, text="Event Log", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=(2, 2))
-        
-        self.log_textbox = ctk.CTkTextbox(self.log_frame, height=300, font=("Consolas", 11))
-        self.log_textbox.pack(fill="x", padx=10, pady=(0, 10))
-        self.log_textbox.configure(state="disabled")
-        
-        # Main Layout (middle)
-        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.main_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        
-        self.create_calibration_section(self.main_frame)
-        self.create_forwarding_section(self.main_frame)
-        self.create_buttons_section(self.main_frame)
-        self.create_graph_section(self.main_frame)
-        
-        self.last_sleeping_state = False
-        self.update_status()
-
-    def log_message(self, msg: str) -> None:
-        self.log_textbox.configure(state="normal")
-        self.log_textbox.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-        self.log_textbox.see("end")
-        self.log_textbox.configure(state="disabled")
-
-    def open_detailed_settings(self) -> None:
-        if self.settings_window is None or not self.settings_window.winfo_exists():
-            self.settings_window = DetailedSettingsWindow(self, self.config)
-        else:
-            self.settings_window.focus()
-            self.settings_window.lift()
-
-    def create_calibration_section(self, parent: ctk.CTkFrame) -> None:
-        section = ctk.CTkFrame(parent)
-        section.pack(fill="x", pady=(0, 10))
-        
-        header = ctk.CTkFrame(section, fg_color="transparent")
-        header.pack(fill="x", padx=10, pady=5)
-        ctk.CTkLabel(header, text="Gaze Calibration", font=("Arial", 16, "bold")).pack(side="left")
-        ctk.CTkButton(header, text="Reset", width=60, height=24, command=self.reset_calibration).pack(side="right")
-        
-        self.calib_btn = ctk.CTkButton(section, text="Calibrate Center", font=("Arial", 14), height=40, command=self.start_calibration)
-        self.calib_btn.pack(fill="x", padx=20, pady=10)
-
-    def start_calibration(self) -> None:
-        self.calib_btn.configure(state="disabled")
-        countdown = self.config.get("calibration", {}).get("countdown_seconds", 5)
-        self.log_message(f"センターキャリブレーションを開始しました。{countdown}秒間正面を向いてください...")
-        self.calib_countdown(countdown)
-
-    def calib_countdown(self, seconds: int) -> None:
-        if seconds > 0:
-            self.calib_btn.configure(text=f"Look straight ahead... {seconds}")
-            self.after(1000, self.calib_countdown, seconds - 1)
-        else:
-            self.calib_btn.configure(text="Capturing...")
-            self.after(100, self.execute_calibration)
-
-    def execute_calibration(self) -> None:
-        rx, lx, ry, ly = self.handler.get_raw_gaze()
-        with state_lock:
-            self.config["calibration"]["right_gaze_x_offset"] = rx
-            self.config["calibration"]["left_gaze_x_offset"] = lx
-            self.config["calibration"]["right_gaze_y_offset"] = ry
-            self.config["calibration"]["left_gaze_y_offset"] = ly
-        self.calib_btn.configure(text="Calibrate Center", state="normal")
-        self.log_message(f"センターキャリブレーション完了: 右目オフセット({rx:.2f}, {ry:.2f}) 左目オフセット({lx:.2f}, {ly:.2f}) を設定しました。")
-
-    def reset_calibration(self) -> None:
-        with state_lock:
-            self.config["calibration"] = DEFAULT_CONFIG["calibration"].copy()
-        self.log_message("キャリブレーション設定を初期値にリセットしました。")
-
-    def create_forwarding_section(self, parent: ctk.CTkFrame) -> None:
-        section = ctk.CTkFrame(parent)
-        section.pack(fill="x", pady=(0, 10))
-        
-        header = ctk.CTkFrame(section, fg_color="transparent")
-        header.pack(fill="x", padx=10, pady=5)
-        ctk.CTkLabel(header, text="Forwarding Toggles", font=("Arial", 16, "bold")).pack(side="left")
-        
-        row = ctk.CTkFrame(section, fg_color="transparent")
-        row.pack(fill="x", padx=10, pady=5)
-        
-        self.fwd_mouth = ctk.BooleanVar(value=self.config["forwarding"]["enable_mouth"])
-        self.fwd_right = ctk.BooleanVar(value=self.config["forwarding"]["enable_right_eye"])
-        self.fwd_left = ctk.BooleanVar(value=self.config["forwarding"]["enable_left_eye"])
-        
-        cb_mouth = ctk.CTkCheckBox(row, text="Mouth", variable=self.fwd_mouth, command=self.on_forwarding_change)
-        cb_mouth.pack(side="left", padx=5, expand=True)
-        
-        cb_right = ctk.CTkCheckBox(row, text="Right Eye", variable=self.fwd_right, command=self.on_forwarding_change)
-        cb_right.pack(side="left", padx=5, expand=True)
-        
-        cb_left = ctk.CTkCheckBox(row, text="Left Eye", variable=self.fwd_left, command=self.on_forwarding_change)
-        cb_left.pack(side="left", padx=5, expand=True)
-        
-    def on_forwarding_change(self) -> None:
-        with state_lock:
-            self.config["forwarding"]["enable_mouth"] = self.fwd_mouth.get()
-            self.config["forwarding"]["enable_right_eye"] = self.fwd_right.get()
-            self.config["forwarding"]["enable_left_eye"] = self.fwd_left.get()
-
-    def create_buttons_section(self, parent: ctk.CTkFrame) -> None:
-        settings_btn = ctk.CTkButton(parent, text="詳細設定を開く", font=("Arial", 14, "bold"), height=40, command=self.open_detailed_settings)
-        settings_btn.pack(fill="x", pady=(0, 10))
-
-    def create_graph_section(self, parent: ctk.CTkFrame) -> None:
-        section = ctk.CTkFrame(parent)
-        section.pack(fill="x", pady=(0, 10))
-        
-        self.throughput_history = [0] * 20
-        self.graph_canvas = ctk.CTkCanvas(section, height=75, bg="#2b2b2b", highlightthickness=0)
-        self.graph_canvas.pack(fill="x", padx=10, pady=10)
-
-    def update_status(self) -> None:
-        mps, is_sleeping = self.handler.get_status()
-        self.draw_throughput_graph(mps)
-        
-        if is_sleeping:
-            self.banner_frame.configure(fg_color="#D32F2F") # Red
-            self.banner_label.configure(text="STATUS: SLEEPING")
-        else:
-            self.banner_frame.configure(fg_color="#388E3C") # Green
-            self.banner_label.configure(text="STATUS: ACTIVE")
-            
-        if is_sleeping != self.last_sleeping_state:
-            self.last_sleeping_state = is_sleeping
-            if is_sleeping:
-                self.log_message("スリープ状態（SLEEPING）になりました。目を閉じた状態（Closed Value）に固定します。")
-            else:
-                self.log_message("アクティブ状態（ACTIVE）に戻りました。")
-                
-        self.after(500, self.update_status)
-
-    def draw_throughput_graph(self, mps: int) -> None:
-        self.throughput_history.append(mps)
-        self.throughput_history.pop(0)
-        
-        self.graph_canvas.delete("all")
-        
-        width = self.graph_canvas.winfo_width()
-        if width <= 1:
-            width = 410  # Fit width for 450 window size
-        height = 75
-        
-        # Grid lines (faint)
-        for ratio in [0.25, 0.5, 0.75]:
-            y = height * (1 - ratio)
-            self.graph_canvas.create_line(0, y, width, y, fill="#3e3e3e", dash=(2, 2))
-            
-        # Coordinates
-        max_val = max(100, max(self.throughput_history))
-        points = []
-        for i, val in enumerate(self.throughput_history):
-            x = i * (width / 19)
-            y = height - 5 - (val / max_val) * (height - 10)
-            points.append((x, y))
-            
-        flat_points = []
-        for p in points:
-            flat_points.extend(p)
-            
-        # Draw area under the curve
-        poly_points = [0, height] + flat_points + [width, height]
-        self.graph_canvas.create_polygon(*poly_points, fill="#123c45", outline="", smooth=True)
-        
-        # Draw spline line
-        self.graph_canvas.create_line(*flat_points, fill="#00B4D8", width=2, smooth=True)
-        
-        # Draw label overlay
-        self.graph_canvas.create_text(10, 5, text=f"Throughput: {mps} msg/s", fill="#e0e0e0", font=("Arial", 11, "bold"), anchor="nw")
+                self.log_message(f"自動起動設定の変更中にエラー: {e}")
