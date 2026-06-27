@@ -44,6 +44,7 @@ class OSCMessageHandler:
 
         self.last_right_lid_address = "/avatar/parameters/RightEyeLid"
         self.last_left_lid_address = "/avatar/parameters/LeftEyeLid"
+        self.sleep_last_send_times: dict[str, float] = {}
 
     def get_status(self) -> Tuple[int, bool]:
         current_time = time.time()
@@ -52,12 +53,15 @@ class OSCMessageHandler:
                 if not self.is_sleeping:
                     if current_time - self.last_change_time >= self.config["sleep_mode"]["timeout_seconds"]:
                         self.is_sleeping = True
+                        self.sleep_last_send_times.clear()
                         closed_val = self.config["sleep_mode"]["closed_value"]
                         self.client.send_message(self.last_right_lid_address, [closed_val])
                         self.client.send_message(self.last_left_lid_address, [closed_val])
+                        self.msg_sent_count += 2
             else:
                 if self.is_sleeping:
                     self.is_sleeping = False
+                    self.sleep_last_send_times.clear()
             
             count = self.msg_sent_count
             self.msg_sent_count = 0
@@ -68,6 +72,22 @@ class OSCMessageHandler:
         with self.lock:
             return self.raw_right_gaze_x, self.raw_left_gaze_x, self.raw_right_gaze_y, self.raw_left_gaze_y
 
+    def _check_rate_limit(self, address: str, current_time: float) -> bool:
+        """Returns True if the message should be DROPPED to maintain a staggered 1 msg/s rate."""
+        if address not in self.sleep_last_send_times:
+            # Assign a deterministic random offset based on the address to stagger the sending
+            h = abs(hash(address))
+            offset = (h % 1000) / 1000.0  # 0.0 ~ 0.999
+            self.sleep_last_send_times[address] = current_time - 1.0 + offset
+            return True  # Drop the first frame to enforce the offset
+
+        last_time = self.sleep_last_send_times[address]
+        if current_time - last_time < 1.0:
+            return True  # Drop
+
+        self.sleep_last_send_times[address] = current_time
+        return False  # Pass
+
     def handle(self, address: str, *args: Any) -> None:
         incoming_value: float = args[0] if len(args) > 0 else 0.0
         current_time: float = time.time()
@@ -75,11 +95,11 @@ class OSCMessageHandler:
         if "RightEyeLid" in address or "LeftEyeLid" in address:
             self._handle_eyelid(address, incoming_value, current_time, args)
         elif any(k in address for k in ["RightEyeX", "EyeRightX", "LeftEyeX", "EyeLeftX"]):
-            self._handle_gaze_x(address, incoming_value, args)
+            self._handle_gaze_x(address, incoming_value, current_time, args)
         elif any(k in address for k in ["RightEyeY", "EyeRightY", "LeftEyeY", "EyeLeftY"]):
-            self._handle_gaze_y(address, incoming_value, args)
+            self._handle_gaze_y(address, incoming_value, current_time, args)
         else:
-            self._handle_default(address, args)
+            self._handle_default(address, current_time, args)
 
     def _handle_eyelid(self, address: str, incoming_value: float, current_time: float, args: Tuple[Any, ...]) -> None:
         with self.lock:
@@ -90,6 +110,10 @@ class OSCMessageHandler:
             else:
                 self.last_left_lid_address = address
                 self.in_left_lid = incoming_value
+            
+            if self.is_sleeping:
+                if self._check_rate_limit(address, current_time):
+                    return
             
             mix_cfg = self.config["mix"]["eyelid"]
             out_right = self.in_right_lid * mix_cfg["right_out"]["right_in"] + self.in_left_lid * mix_cfg["right_out"]["left_in"]
@@ -106,17 +130,30 @@ class OSCMessageHandler:
             if self.last_eye_value is None or abs(incoming_value - self.last_eye_value) >= self.config["sleep_mode"]["change_threshold"]:
                 self.last_eye_value = incoming_value
                 self.last_change_time = current_time
-                self.is_sleeping = False
+                if self.is_sleeping:
+                    self.is_sleeping = False
+                    self.sleep_last_send_times.clear()
             else:
-                if current_time - self.last_change_time >= self.config["sleep_mode"]["timeout_seconds"]:
+                if not self.is_sleeping and current_time - self.last_change_time >= self.config["sleep_mode"]["timeout_seconds"]:
                     self.is_sleeping = True
+                    self.sleep_last_send_times.clear()
+                    closed_val = self.config["sleep_mode"]["closed_value"]
+                    self.client.send_message(self.last_right_lid_address, [closed_val])
+                    self.client.send_message(self.last_left_lid_address, [closed_val])
+                    self.msg_sent_count += 2
         else:
             self.last_eye_value = incoming_value
-            self.is_sleeping = False
+            if self.is_sleeping:
+                self.is_sleeping = False
+                self.sleep_last_send_times.clear()
 
-    def _handle_gaze_x(self, address: str, incoming_value: float, args: Tuple[Any, ...]) -> None:
+    def _handle_gaze_x(self, address: str, incoming_value: float, current_time: float, args: Tuple[Any, ...]) -> None:
         is_right = "RightEyeX" in address or "EyeRightX" in address
         with self.lock:
+            if self.is_sleeping:
+                if self._check_rate_limit(address, current_time):
+                    return
+
             if is_right:
                 self.raw_right_gaze_x = incoming_value
             else:
@@ -131,9 +168,13 @@ class OSCMessageHandler:
 
         self._send_gaze_messages(address, is_right, "EyeX", out_right, out_left, args)
 
-    def _handle_gaze_y(self, address: str, incoming_value: float, args: Tuple[Any, ...]) -> None:
+    def _handle_gaze_y(self, address: str, incoming_value: float, current_time: float, args: Tuple[Any, ...]) -> None:
         is_right = "RightEyeY" in address or "EyeRightY" in address
         with self.lock:
+            if self.is_sleeping:
+                if self._check_rate_limit(address, current_time):
+                    return
+
             if is_right:
                 self.raw_right_gaze_y = incoming_value
             else:
@@ -192,13 +233,46 @@ class OSCMessageHandler:
         if len(out_l) > 0: out_l[0] = out_left
         else: out_l = [out_left]
         
-        self.client.send_message(r_addr, out_r)
-        self.client.send_message(l_addr, out_l)
+        with self.lock:
+            do_right = self.config["forwarding"]["enable_right_eye"]
+            do_left = self.config["forwarding"]["enable_left_eye"]
+            
+        sent_count = 0
+        if do_right:
+            self.client.send_message(r_addr, out_r)
+            sent_count += 1
+        if do_left:
+            self.client.send_message(l_addr, out_l)
+            sent_count += 1
         
         with self.lock:
-            self.msg_sent_count += 2
+            self.msg_sent_count += sent_count
 
-    def _handle_default(self, address: str, args: Tuple[Any, ...]) -> None:
+    def _is_mouth_parameter(self, address: str) -> bool:
+        if not hasattr(self, "mouth_params"):
+            try:
+                import os
+                if os.path.exists("mouth_params_list.txt"):
+                    with open("mouth_params_list.txt", "r", encoding="utf-8") as f:
+                        self.mouth_params = [line.strip().lower() for line in f if line.strip()]
+                else:
+                    self.mouth_params = ["mouth", "jaw", "cheek", "tongue", "nose"]
+            except Exception:
+                self.mouth_params = ["mouth", "jaw", "cheek", "tongue", "nose"]
+        addr_lower = address.lower()
+        return any(k in addr_lower for k in self.mouth_params)
+
+    def _handle_default(self, address: str, current_time: float, args: Tuple[Any, ...]) -> None:
+        if self._is_mouth_parameter(address):
+            with self.lock:
+                if not self.config["forwarding"]["enable_mouth"]:
+                    return
+                if self.is_sleeping:
+                    if not self.config["sleep_mode"]["enable_mouth"]:
+                        return
+                    if self._check_rate_limit(address, current_time):
+                        return
+
         self.client.send_message(address, args)
         with self.lock:
             self.msg_sent_count += 1

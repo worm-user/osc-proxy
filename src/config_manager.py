@@ -7,9 +7,15 @@ CONFIG_FILE: str = "config.json"
 DEFAULT_CONFIG: dict[str, Any] = {
     "sleep_mode": {
         "enabled": True,
-        "timeout_seconds": 300.0,
+        "timeout_seconds": 60.0,
         "change_threshold": 0.20,
-        "closed_value": 0.0
+        "closed_value": 0.0,
+        "enable_mouth": True
+    },
+    "forwarding": {
+        "enable_mouth": True,
+        "enable_right_eye": True,
+        "enable_left_eye": True
     },
     "mix": {
         "eyelid": {
@@ -51,6 +57,8 @@ def load_config() -> dict[str, Any]:
             user_config = json.load(f)
             
         config = DEFAULT_CONFIG.copy()
+        if "forwarding" in user_config:
+            config["forwarding"].update(user_config["forwarding"])
         if "sleep_mode" in user_config:
             config["sleep_mode"].update(user_config["sleep_mode"])
         if "mix" in user_config:

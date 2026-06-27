@@ -110,6 +110,10 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
         cb = ctk.CTkCheckBox(section, text="Enable Sleep Mode", variable=self.sleep_enabled, command=self.on_sleep_change)
         cb.pack(anchor="w", padx=20, pady=10)
         
+        self.sleep_mouth = ctk.BooleanVar(value=self.config["sleep_mode"]["enable_mouth"])
+        cb_mouth = ctk.CTkCheckBox(section, text="Forward Mouth Data (1 msg/s)", variable=self.sleep_mouth, command=self.on_sleep_change)
+        cb_mouth.pack(anchor="w", padx=20, pady=(0, 10))
+        
         row1 = ctk.CTkFrame(section, fg_color="transparent")
         row1.pack(fill="x", padx=20, pady=5)
         ctk.CTkLabel(row1, text="Timeout (sec):", width=120, anchor="e").pack(side="left", padx=5)
@@ -137,6 +141,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
     def on_sleep_change(self, event: Any = None) -> None:
         with state_lock:
             self.config["sleep_mode"]["enabled"] = self.sleep_enabled.get()
+            self.config["sleep_mode"]["enable_mouth"] = self.sleep_mouth.get()
             try: self.config["sleep_mode"]["timeout_seconds"] = float(self.timeout_entry.get())
             except: pass
             try: self.config["sleep_mode"]["change_threshold"] = float(self.threshold_entry.get())
@@ -150,6 +155,7 @@ class DetailedSettingsWindow(ctk.CTkToplevel):
             self.config["sleep_mode"] = default.copy()
         
         self.sleep_enabled.set(default["enabled"])
+        self.sleep_mouth.set(default.get("enable_mouth", True))
         self.timeout_entry.delete(0, 'end')
         self.timeout_entry.insert(0, str(default["timeout_seconds"]))
         self.threshold_entry.delete(0, 'end')
@@ -209,7 +215,7 @@ class OSCProxyGUI(ctk.CTk):
         self.handler = handler
         self.config = config
         self.title("OSC Proxy Configuration")
-        self.geometry("450x680")
+        self.geometry("450x780")
         self.resizable(False, False)
         
         self.settings_window = None
@@ -236,6 +242,7 @@ class OSCProxyGUI(ctk.CTk):
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
         self.create_calibration_section(self.main_frame)
+        self.create_forwarding_section(self.main_frame)
         self.create_buttons_section(self.main_frame)
         self.create_graph_section(self.main_frame)
         
@@ -295,6 +302,36 @@ class OSCProxyGUI(ctk.CTk):
         with state_lock:
             self.config["calibration"] = DEFAULT_CONFIG["calibration"].copy()
         self.log_message("キャリブレーション設定を初期値にリセットしました。")
+
+    def create_forwarding_section(self, parent: ctk.CTkFrame) -> None:
+        section = ctk.CTkFrame(parent)
+        section.pack(fill="x", pady=(0, 10))
+        
+        header = ctk.CTkFrame(section, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=5)
+        ctk.CTkLabel(header, text="Forwarding Toggles", font=("Arial", 16, "bold")).pack(side="left")
+        
+        row = ctk.CTkFrame(section, fg_color="transparent")
+        row.pack(fill="x", padx=10, pady=5)
+        
+        self.fwd_mouth = ctk.BooleanVar(value=self.config["forwarding"]["enable_mouth"])
+        self.fwd_right = ctk.BooleanVar(value=self.config["forwarding"]["enable_right_eye"])
+        self.fwd_left = ctk.BooleanVar(value=self.config["forwarding"]["enable_left_eye"])
+        
+        cb_mouth = ctk.CTkCheckBox(row, text="Mouth", variable=self.fwd_mouth, command=self.on_forwarding_change)
+        cb_mouth.pack(side="left", padx=5, expand=True)
+        
+        cb_right = ctk.CTkCheckBox(row, text="Right Eye", variable=self.fwd_right, command=self.on_forwarding_change)
+        cb_right.pack(side="left", padx=5, expand=True)
+        
+        cb_left = ctk.CTkCheckBox(row, text="Left Eye", variable=self.fwd_left, command=self.on_forwarding_change)
+        cb_left.pack(side="left", padx=5, expand=True)
+        
+    def on_forwarding_change(self) -> None:
+        with state_lock:
+            self.config["forwarding"]["enable_mouth"] = self.fwd_mouth.get()
+            self.config["forwarding"]["enable_right_eye"] = self.fwd_right.get()
+            self.config["forwarding"]["enable_left_eye"] = self.fwd_left.get()
 
     def create_buttons_section(self, parent: ctk.CTkFrame) -> None:
         settings_btn = ctk.CTkButton(parent, text="詳細設定を開く", font=("Arial", 14, "bold"), height=40, command=self.open_detailed_settings)
