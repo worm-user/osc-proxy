@@ -1,7 +1,10 @@
 import time
-from typing import Any, Optional, Tuple
+import threading
+from typing import Any, Optional, Tuple, Dict, List
 from threading import Lock
 from pythonosc.udp_client import SimpleUDPClient
+from pythonosc.osc_bundle_builder import OscBundleBuilder
+from pythonosc.osc_message_builder import OscMessageBuilder
 
 class OSCMessageHandler:
     client: SimpleUDPClient
@@ -23,6 +26,8 @@ class OSCMessageHandler:
 
     last_right_lid_address: str
     last_left_lid_address: str
+    
+    pending_messages: dict[str, list[Any]]
 
     def __init__(self, client: SimpleUDPClient, config: dict[str, Any], lock: Lock) -> None:
         self.client = client
@@ -45,6 +50,37 @@ class OSCMessageHandler:
         self.last_right_lid_address = "/avatar/parameters/RightEyeLid"
         self.last_left_lid_address = "/avatar/parameters/LeftEyeLid"
         self.sleep_last_send_times: dict[str, float] = {}
+        self.pending_messages = {}
+        
+        self.bundle_thread = threading.Thread(target=self._bundle_sender_loop, daemon=True)
+        self.bundle_thread.start()
+
+    def _bundle_sender_loop(self) -> None:
+        while True:
+            time.sleep(0.016)  # ~60Hz
+            with self.lock:
+                if not self.pending_messages:
+                    continue
+                msgs_to_send = self.pending_messages.copy()
+                self.pending_messages.clear()
+            
+            bundle_builder = OscBundleBuilder(0)
+            sent_count = 0
+            
+            for addr, args in msgs_to_send.items():
+                msg_builder = OscMessageBuilder(address=addr)
+                for arg in args:
+                    msg_builder.add_arg(arg)
+                bundle_builder.add_content(msg_builder.build())
+                sent_count += 1
+                
+            bundle = bundle_builder.build()
+            try:
+                self.client.send(bundle)
+                with self.lock:
+                    self.msg_sent_count += sent_count
+            except Exception:
+                pass
 
     def get_status(self) -> Tuple[int, bool]:
         current_time = time.time()
@@ -55,9 +91,8 @@ class OSCMessageHandler:
                         self.is_sleeping = True
                         self.sleep_last_send_times.clear()
                         closed_val = self.config["sleep_mode"]["closed_value"]
-                        self.client.send_message(self.last_right_lid_address, [closed_val])
-                        self.client.send_message(self.last_left_lid_address, [closed_val])
-                        self.msg_sent_count += 2
+                        self.pending_messages[self.last_right_lid_address] = [closed_val]
+                        self.pending_messages[self.last_left_lid_address] = [closed_val]
             else:
                 if self.is_sleeping:
                     self.is_sleeping = False
@@ -138,9 +173,8 @@ class OSCMessageHandler:
                     self.is_sleeping = True
                     self.sleep_last_send_times.clear()
                     closed_val = self.config["sleep_mode"]["closed_value"]
-                    self.client.send_message(self.last_right_lid_address, [closed_val])
-                    self.client.send_message(self.last_left_lid_address, [closed_val])
-                    self.msg_sent_count += 2
+                    self.pending_messages[self.last_right_lid_address] = [closed_val]
+                    self.pending_messages[self.last_left_lid_address] = [closed_val]
         else:
             self.last_eye_value = incoming_value
             if self.is_sleeping:
@@ -237,16 +271,10 @@ class OSCMessageHandler:
             do_right = self.config["forwarding"]["enable_right_eye"]
             do_left = self.config["forwarding"]["enable_left_eye"]
             
-        sent_count = 0
-        if do_right:
-            self.client.send_message(r_addr, out_r)
-            sent_count += 1
-        if do_left:
-            self.client.send_message(l_addr, out_l)
-            sent_count += 1
-        
-        with self.lock:
-            self.msg_sent_count += sent_count
+            if do_right:
+                self.pending_messages[r_addr] = out_r
+            if do_left:
+                self.pending_messages[l_addr] = out_l
 
     def _is_mouth_parameter(self, address: str) -> bool:
         if not hasattr(self, "mouth_params"):
@@ -273,6 +301,5 @@ class OSCMessageHandler:
                     if self._check_rate_limit(address, current_time):
                         return
 
-        self.client.send_message(address, args)
         with self.lock:
-            self.msg_sent_count += 1
+            self.pending_messages[address] = list(args)
