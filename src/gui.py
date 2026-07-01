@@ -68,6 +68,8 @@ class OSCProxyGUI(ctk.CTk):
         self.last_sleeping_state = False
         self.show_dashboard()
         self.update_status()
+        
+        self.bind("<<SteamVRClosed>>", self._on_steamvr_closed)
 
     # View Setup Methods
     def setup_dashboard(self) -> None:
@@ -153,11 +155,28 @@ class OSCProxyGUI(ctk.CTk):
         save_config(self.config)
         self.log_message("設定を config.json に保存しました。")
 
+    def _on_steamvr_closed(self, event: Any = None) -> None:
+        self.log_message("SteamVRが終了しました。OSC Proxyを終了します...")
+        self.after(1000, self.destroy)
+
     def log_message(self, msg: str) -> None:
+        timestamp_str = time.strftime('%H:%M:%S')
+        full_msg = f"[{timestamp_str}] {msg}\n"
+        
         self.log_textbox.configure(state="normal")
-        self.log_textbox.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        self.log_textbox.insert("end", full_msg)
         self.log_textbox.see("end")
         self.log_textbox.configure(state="disabled")
+        
+        import os, sys
+        base_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        date_str = time.strftime('%Y-%m-%d')
+        log_path = os.path.join(base_dir, f"osc_proxy_{date_str}.log")
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(full_msg)
+        except Exception:
+            pass
 
     def on_forwarding_change(self) -> None:
         with state_lock:
@@ -353,11 +372,11 @@ class OSCProxyGUI(ctk.CTk):
             self.config["sleep_mode"]["enabled"] = self.sleep_enabled.get()
             self.config["sleep_mode"]["enable_mouth"] = self.sleep_mouth.get()
             try: self.config["sleep_mode"]["timeout_seconds"] = float(self.timeout_entry.get())
-            except: pass
+            except ValueError: pass
             try: self.config["sleep_mode"]["change_threshold"] = float(self.threshold_entry.get())
-            except: pass
+            except ValueError: pass
             try: self.config["sleep_mode"]["closed_value"] = float(self.closed_val_entry.get())
-            except: pass
+            except ValueError: pass
 
     def reset_sleep(self) -> None:
         default = DEFAULT_CONFIG["sleep_mode"]

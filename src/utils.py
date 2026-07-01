@@ -22,8 +22,13 @@ def resolve_port_conflict(port: int, disp: Dispatcher, ip_address: str = "127.0.
                         
                     if is_proxy:
                         print(f"\n[エラー] ポート {port} は既に別の OSC Proxy (PID: {pid}) によって使用されています。")
-                        ans = input("以前のプロセスを終了して新しく起動しますか？ (y/n): ")
-                        if ans.lower() in ['y', 'yes']:
+                        import tkinter as tk
+                        from tkinter import messagebox
+                        root = tk.Tk()
+                        root.withdraw()
+                        ans = messagebox.askyesno("ポートの競合", f"ポート {port} は既に別の OSC Proxy (PID: {pid}) によって使用されています。\n\n以前のプロセスを終了して新しく起動しますか？")
+                        root.destroy()
+                        if ans:
                             proc.terminate()
                             proc.wait(timeout=3)
                             print("古いプロセスを終了しました。再起動します...\n")
@@ -52,12 +57,12 @@ def is_steamvr_running() -> bool:
             pass
     return False
 
-def monitor_steamvr(server: ThreadingOSCUDPServer) -> None:
+def monitor_steamvr(app: Any) -> None:
     time.sleep(30)
     while True:
         if not is_steamvr_running():
-            server.shutdown()
-            os._exit(0) # Also terminate the GUI if steamvr is closed
+            app.event_generate("<<SteamVRClosed>>")
+            break
         time.sleep(5)
 
 def register_steamvr_manifest(config: Optional[dict[str, Any]] = None, log_callback: Optional[Callable[[str], None]] = None) -> bool:

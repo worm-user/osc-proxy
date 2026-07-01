@@ -47,22 +47,7 @@ class OSCMessageHandler:
         self.sleep_last_send_times: dict[str, float] = {}
 
     def get_status(self) -> Tuple[int, bool]:
-        current_time = time.time()
         with self.lock:
-            if self.config["sleep_mode"]["enabled"]:
-                if not self.is_sleeping:
-                    if current_time - self.last_change_time >= self.config["sleep_mode"]["timeout_seconds"]:
-                        self.is_sleeping = True
-                        self.sleep_last_send_times.clear()
-                        closed_val = self.config["sleep_mode"]["closed_value"]
-                        self.client.send_message(self.last_right_lid_address, [closed_val])
-                        self.client.send_message(self.last_left_lid_address, [closed_val])
-                        self.msg_sent_count += 2
-            else:
-                if self.is_sleeping:
-                    self.is_sleeping = False
-                    self.sleep_last_send_times.clear()
-            
             count = self.msg_sent_count
             self.msg_sent_count = 0
             is_sleeping = self.is_sleeping
@@ -252,8 +237,11 @@ class OSCMessageHandler:
         if not hasattr(self, "mouth_params"):
             try:
                 import os
-                if os.path.exists("mouth_params_list.txt"):
-                    with open("mouth_params_list.txt", "r", encoding="utf-8") as f:
+                import sys
+                base_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+                params_path = os.path.join(base_dir, "mouth_params_list.txt")
+                if os.path.exists(params_path):
+                    with open(params_path, "r", encoding="utf-8") as f:
                         self.mouth_params = [line.strip().lower() for line in f if line.strip()]
                 else:
                     self.mouth_params = ["mouth", "jaw", "cheek", "tongue", "nose"]

@@ -1,10 +1,16 @@
 import os
 import json
 import threading
+import copy
 from typing import Any
 
 CONFIG_FILE: str = "config.json"
 DEFAULT_CONFIG: dict[str, Any] = {
+    "network": {
+        "receive_port": 8887,
+        "send_port": 8888,
+        "ip_address": "127.0.0.1"
+    },
     "sleep_mode": {
         "enabled": True,
         "timeout_seconds": 60.0,
@@ -50,13 +56,15 @@ def load_config() -> dict[str, Any]:
                 json.dump(DEFAULT_CONFIG, f, indent=4)
         except Exception as e:
             print(f"Error creating config.json: {e}")
-        return DEFAULT_CONFIG
+        return copy.deepcopy(DEFAULT_CONFIG)
 
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             user_config = json.load(f)
             
-        config = DEFAULT_CONFIG.copy()
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        if "network" in user_config:
+            config["network"].update(user_config["network"])
         if "forwarding" in user_config:
             config["forwarding"].update(user_config["forwarding"])
         if "sleep_mode" in user_config:
@@ -76,7 +84,7 @@ def load_config() -> dict[str, Any]:
         return config
     except Exception as e:
         print(f"Error reading config.json: {e}. Using default settings.")
-        return DEFAULT_CONFIG
+        return copy.deepcopy(DEFAULT_CONFIG)
 
 def save_config(config: dict[str, Any]) -> None:
     with state_lock:

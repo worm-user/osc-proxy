@@ -9,15 +9,12 @@ from src.osc_handler import OSCMessageHandler
 from src.gui import OSCProxyGUI
 from src.utils import resolve_port_conflict, monitor_steamvr, register_steamvr_manifest, is_steamvr_running
 
-# 受信ポート（Baballoniaからの送信先ポートに合わせる）
-RECEIVE_PORT: int = 8887
-# 送信ポート（VRChatまたはVRCFaceTrackingの受信ポート）
-SEND_PORT: int = 8888
-IP_ADDRESS: str = "127.0.0.1"
-
-if __name__ == "__main__":
     # 1. Load config
     config: dict[str, Any] = load_config()
+    
+    IP_ADDRESS = config.get("network", {}).get("ip_address", "127.0.0.1")
+    RECEIVE_PORT = config.get("network", {}).get("receive_port", 8887)
+    SEND_PORT = config.get("network", {}).get("send_port", 8888)
     
     # 2. Setup OSC Client and Handler
     client: udp_client.SimpleUDPClient = udp_client.SimpleUDPClient(IP_ADDRESS, SEND_PORT)
@@ -36,9 +33,6 @@ if __name__ == "__main__":
             raise
 
     # 4. Start Background Threads
-    monitor_thread: threading.Thread = threading.Thread(target=monitor_steamvr, args=(server,), daemon=True)
-    monitor_thread.start()
-
     server_thread: threading.Thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
@@ -49,6 +43,9 @@ if __name__ == "__main__":
     ctk.set_default_color_theme("blue")
     
     app: OSCProxyGUI = OSCProxyGUI(handler, config)
+    
+    monitor_thread: threading.Thread = threading.Thread(target=monitor_steamvr, args=(app,), daemon=True)
+    monitor_thread.start()
     
     # Log startup messages
     app.log_message(f"OSC Proxyが起動しました (受信ポート: {RECEIVE_PORT}, 送信ポート: {SEND_PORT})")
@@ -74,5 +71,7 @@ if __name__ == "__main__":
     app.mainloop()
     
     # 6. Shutdown
+    from src.config_manager import save_config
+    save_config(config)
     server.shutdown()
     print("\nOSC Proxy shut down successfully.")
