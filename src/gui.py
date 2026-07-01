@@ -170,8 +170,15 @@ class OSCProxyGUI(ctk.CTk):
         
         import os, sys
         base_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        logs_dir = os.path.join(base_dir, "logs")
+        if not os.path.exists(logs_dir):
+            try:
+                os.makedirs(logs_dir)
+            except Exception:
+                pass
+                
         date_str = time.strftime('%Y-%m-%d')
-        log_path = os.path.join(base_dir, f"osc_proxy_{date_str}.log")
+        log_path = os.path.join(logs_dir, f"osc_proxy_{date_str}.log")
         try:
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(full_msg)
