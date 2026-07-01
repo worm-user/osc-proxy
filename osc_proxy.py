@@ -9,6 +9,7 @@ from src.osc_handler import OSCMessageHandler
 from src.gui import OSCProxyGUI
 from src.utils import resolve_port_conflict, monitor_steamvr, register_steamvr_manifest, is_steamvr_running
 
+if __name__ == "__main__":
     # 1. Load config
     config: dict[str, Any] = load_config()
     
