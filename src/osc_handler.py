@@ -260,6 +260,11 @@ class OSCMessageHandler:
                         return
                     if self._check_rate_limit(address, current_time):
                         return
+                    
+                    modified_args = list(args)
+                    if len(modified_args) > 0:
+                        modified_args[0] = 0.0
+                    args = tuple(modified_args)
 
         self.client.send_message(address, args)
         with self.lock:
