@@ -7,3 +7,5 @@ build_memo.txt
 *.build/
 *.dist/
 *.onefile-build/
+logs/
+*.log
